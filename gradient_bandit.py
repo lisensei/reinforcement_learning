@@ -1,6 +1,7 @@
 from argparse import Action
 import numpy as np
 import scipy.stats as st
+import torch
 np.set_printoptions(precision=4)
 
 
@@ -28,7 +29,7 @@ class Agent():
         self.last_action = -1
         self.last_reward = 0
 
-    def greedy_play(self, bandit, eps=1e-1):
+    def play(self, bandit):
         action = self.action_sampler.rvs()
         self.last_action = action
         self.action_selection_count[action] += 1
@@ -43,13 +44,46 @@ class Agent():
         self.action_sampler = st.rv_discrete(
             values=(self.action_space, self.policy))
 
+    def gradient_update(self, lr=1e-3):
+        self.qvalue_estimates[self.last_action] = self.qvalue_estimates[self.last_action] + \
+            (self.last_reward-self.qvalue_estimates[self.last_action]
+             )/self.action_selection_count[self.last_action]
+        temp = self.policy[self.last_action] + lr*(self.last_reward -
+                                                   self.qvalue_estimates[self.last_action])*(1-self.policy[self.last_action])
+        self.policy = self.policy-lr * \
+            (self.last_reward-self.qvalue_estimates[self.last_action])
+        self.policy[self.last_action] = temp
+        self.policy = self.softmax(self.policy)
+    def softmax(self, a):
+        numerator = np.exp(a)
+        sum = np.sum(numerator)
+        return numerator/sum
+
+    def reset(self,):
+        self.policy = np.array(np.ones((self.num_arm, 1))/self.num_arm)
+        self.qvalue_estimates = np.zeros((self.num_arm, 1))
+        self.action_selection_count = np.zeros((self.num_arm, 1))
+        self.action_sampler = st.rv_discrete(
+            values=(self.action_space, self.policy))
+        self.last_action = -1
+        self.last_reward = 0
+
+
 
 band = Bandit()
 bandman = Agent()
-
-for i in range(10000):
-    reward = bandman.greedy_play(band)
+for i in range(1000):
+    reward = bandman.play(band)
     bandman.last_reward = reward
     bandman.greedy_update()
+print(f"true mean:{band.reward_mean}\n")
+print(f"Epsilon greedy:\nestimates: {bandman.qvalue_estimates.reshape(-1)} \npolicy: {bandman.policy.reshape(-1)}\naction count:{bandman.action_selection_count.reshape(-1)}")
 
-print(f"true mean:{band.reward_mean}\n estimates{bandman.qvalue_estimates.reshape(-1)} \n action count:{bandman.action_selection_count}")
+bandman.reset()
+print("\n\n")
+for i in range(1000):
+    reward = bandman.play(band)
+    bandman.last_reward = reward
+    bandman.gradient_update(lr=4)
+
+print(f"Gradient:\nestimates: {bandman.qvalue_estimates.reshape(-1)} \npolicy: {bandman.policy.reshape(-1)}\naction count: {bandman.action_selection_count.reshape(-1)}")
