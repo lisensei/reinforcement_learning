@@ -29,8 +29,23 @@ for sa in state_action:
             next_state = sa[0] + 1
     states.append(state_action_next_state(sa, next_state))
 
-for sans in states:
-    print(sans)
+qvalues = np.zeros(len(states))
+p = np.ones(4).reshape(1, -1) * 0.25
+
+
+def update(states=states, qvalues=qvalues):
+    for i, (state_action, next_state) in enumerate(states):
+        if 3 < i < 60:
+            indices = [states.index(sans) for sans in states if next_state == sans.state_action[0]]
+            qvalues[i] = p @ (-1 + qvalues[indices])
+
+
+for i in range(1000):
+    update(states, qvalues)
+    state_values = qvalues.reshape(16, -1) @ p.reshape(-1, 1)
+
+print(f"action values:\n{qvalues.reshape(16, -1)}")
+print(f"state values:\n{state_values.reshape(4, -1)}")
 
 
 def canvas(gw=grid_world):
