@@ -120,10 +120,81 @@ class Agent:
         return legal_moves
 
 
+class Canvas:
+    def __init__(self, shape):
+        self.fig, self.axes = plt.subplots(1, 2, layout="constrained")
+        initial_values = np.arange(16).reshape(shape).transpose()
+        '''set state values axes'''
+        self.axes[0].axis("off")
+        self.axes[0].set_title("State Values Estimates")
+        self.axes[0].xaxis.tick_top()
+        self.axes[0].invert_yaxis()
+        self.axes[0].matshow(initial_values, cmap="Blues")
+
+        '''set policy axes'''
+        self.axes[1].set_title("Policy")
+        self.axes[1].axis("off")
+        self.axes[1].xaxis.tick_top()
+        self.axes[1].invert_yaxis()
+        self.axes[1].matshow(initial_values, cmap="Blues")
+        self.arrow_head_width = 0.1
+        self.arrow_head_length = 0.15
+        self.axes[1].scatter(0, 0, s=80, c="red", marker="o")
+        self.axes[1].scatter(3, 3, s=80, c="red", marker="o")
+        for (i, j), v in np.ndenumerate(initial_values):
+            self.axes[0].text(i, j, str(v))
+            if not ((i == 0 and j == 0) or (i == 3 and j == 3)):
+                self.axes[1].arrow(i, j, 0.1, 0, shape="full", head_width=self.arrow_head_width, color="green",
+                                   length_includes_head=False)
+                self.axes[1].arrow(i, j, 0, 0.1, shape="full", head_width=self.arrow_head_width, color="green",
+                                   length_includes_head=False)
+                self.axes[1].arrow(i, j, -0.1, 0, shape="full", head_width=self.arrow_head_width, color="green",
+                                   length_includes_head=False)
+                self.axes[1].arrow(i, j, 0, -0.1, shape="full", head_width=self.arrow_head_width, color="green",
+                                   length_includes_head=False)
+
+    def repaint(self, values, policy):
+        self.axes[0].clear()
+        self.axes[0].set_title("State Values Estimates")
+        self.axes[0].axis("off")
+        self.axes[0].matshow(values, cmap="Blues")
+        for (i, j), v in np.ndenumerate(values):
+            self.axes[0].text(i, j, str(v))
+        self.axes[1].clear()
+        self.axes[1].set_title("Policy")
+        self.axes[1].axis("off")
+        self.axes[1].xaxis.tick_top()
+        self.axes[1].matshow(values, cmap="Blues")
+        self.axes[1].scatter(0, 0, s=80, c="red", marker="o")
+        self.axes[1].scatter(3, 3, s=80, c="red", marker="o")
+        for (i, j), v in np.ndenumerate(policy):
+            if not ((i == 0 and j == 0) or (i == 3 and j == 3)):
+                if v == 0:
+                    self.axes[1].arrow(i, j, 0, -0.1, shape="full", head_width=self.arrow_head_width,
+                                       head_length=self.arrow_head_length, color="green", length_includes_head=False)
+                if v == 1:
+                    self.axes[1].arrow(i, j, 0, 0.1, shape="full", head_width=self.arrow_head_width,
+                                       head_length=self.arrow_head_length, color="green", length_includes_head=False)
+                if v == 2:
+                    self.axes[1].arrow(i, j, -0.1, 0, shape="full", head_width=self.arrow_head_width,
+                                       head_length=self.arrow_head_length, color="green", length_includes_head=False)
+                if v == 3:
+                    self.axes[1].arrow(i, j, 0, -0.1, shape="full", head_width=self.arrow_head_width,
+                                       head_length=self.arrow_head_length, color="green", length_includes_head=False)
+
+
 gw = GridWorld()
-ini = gw.init_env()
+gw.init_env()
 agent = Agent(gw)
+plt.ion()
+can = Canvas((4, 4))
+plt.figure(can.fig)
+plt.show()
+plt.pause(2)
 for i in range(20000):
-    if i % 1000 == 0 and i != 0:
-        print(agent.state_value_estimates.reshape(-1, 4))
+    if i % 25 == 0 and i != 0:
+        values = np.round(agent.state_value_estimates.reshape(-1, 4), decimals=1).transpose()
+        policy = np.argmax(agent.policy, axis=1).reshape(-1, 4).transpose()
+        can.repaint(values, policy)
+        plt.pause(0.5)
     agent.learning_with_monte_carlo()
