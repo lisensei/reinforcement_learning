@@ -1,6 +1,5 @@
 """
 Monte Carlo value iteration on 4x4 grid world
-
 """
 import numpy as np
 import matplotlib.pyplot as plt
@@ -57,44 +56,52 @@ class GridWorld:
         self.current_state = self.initial_state
         return self.initial_state
 
+    def reset(self):
+        self.initial_state = st.randint(np.min(self.environment) + 1, np.max(self.environment)).rvs(1)
+        self.current_state = self.initial_state
+        self.episode_ended = False
+        return self.current_state
+
 
 '''This class creates an agent'''
 
 
 class Agent:
-    def __init__(self, num_states=16, num_actions=4):
+    def __init__(self, env, num_states=16, num_actions=4, gamma=1):
         self.experience = []
+        self.environment = env
         self.grid_world = np.arange(0, 16).reshape(-1, 4)
         self.policy = np.ones((num_states, num_actions)) / num_actions
         self.state_value_estimates = np.zeros(num_states)
         self.state_update_count = np.zeros(num_states)
         self.legal_moves = self.get_legal_moves()
         self.policy_update_count = 0
+        self.gamma = gamma
 
-    def get_episode(self, env):
-        cs = env.current_state
-        trajectory = [*cs]
+    def get_episode(self):
+        self.environment.reset()
+        current_state = self.environment.current_state
+        trajectory = [*current_state]
         rewards = [0]
-        while not env.episode_ended:
+        while not self.environment.episode_ended:
             action_pmf = st.rv_discrete(
-                values=(env.action_space.reshape(-1), self.policy[cs].reshape(-1)))
+                values=(self.environment.action_space.reshape(-1), self.policy[current_state].reshape(-1)))
             action = action_pmf.rvs(size=1)
-            cs, rwd = env.take_action(action)
-            trajectory.append(*cs)
+            current_state, rwd = self.environment.take_action(action)
+            trajectory.append(*current_state)
             rewards.append(*rwd)
         return np.array(trajectory), np.array(rewards)
 
-    def update_value_estimates(self):
-        gamma = np.array(1)
+    def update_value_estimates(self, episode):
         env = GridWorld()
         env.init_env()
-        traj, rwds = self.get_episode(env)
+        traj, rwds = episode
         for i in range(1, 15):
             if len(np.argwhere(traj == i)) != 0:
                 first_occurance, = np.argwhere(traj == i)[0]
                 subtrajectory = traj[first_occurance:]
                 subtrajectory_length = len(subtrajectory)
-                powers = np.power(gamma, np.arange(0, subtrajectory_length))
+                powers = np.power(self.gamma, np.arange(0, subtrajectory_length))
                 cum_return = np.sum(rwds[first_occurance:] * powers)
                 self.state_value_estimates[i] = (self.state_value_estimates[i] * self.state_update_count[
                     i] + cum_return) / (self.state_update_count[i] + 1)
@@ -202,7 +209,8 @@ class Canvas:
                                        head_length=self.arrow_head_length, color="green", length_includes_head=False)
 
 
-agent = Agent()
+gw = GridWorld()
+agent = Agent(gw)
 plt.ion()
 can = Canvas((4, 4))
 plt.figure(can.fig)
@@ -214,5 +222,5 @@ for i in range(20000):
         policy = np.argmax(agent.policy, axis=1).reshape(-1, 4).transpose()
         can.repaint(values, policy)
         plt.pause(0.5)
-    agent.update_value_estimates()
+    agent.update_value_estimates(agent.get_episode())
     agent.update_policy()
