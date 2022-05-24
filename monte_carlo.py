@@ -4,8 +4,10 @@ Monte Carlo value iteration on 4x4 grid world
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.stats as st
+from collections import namedtuple
 
 '''This class creates the grid world environment'''
+transition = namedtuple("transition", ["state", "action", "next_state", "reward"])
 
 
 class GridWorld:
@@ -80,29 +82,28 @@ class Agent:
 
     def get_episode(self):
         self.environment.reset()
-        current_state = self.environment.current_state
-        trajectory = [*current_state]
-        rewards = [0]
+        episode = []
         while not self.environment.episode_ended:
+            current_state = np.copy(self.environment.current_state)
             action_pmf = st.rv_discrete(
                 values=(self.environment.action_space.reshape(-1), self.policy[current_state].reshape(-1)))
             action = action_pmf.rvs(size=1)
-            current_state, rwd = self.environment.take_action(action)
-            trajectory.append(*current_state)
-            rewards.append(*rwd)
-        return np.array(trajectory), np.array(rewards)
+            next_state, reward = self.environment.take_action(action)
+            self.append = episode.append(transition(current_state, action, np.copy(next_state), reward))
+        episode = np.array(episode)
+        return episode
 
     def update_value_estimates(self, episode):
         env = GridWorld()
         env.init_env()
-        traj, rwds = episode
+        trajectory, rewards = episode[:, 0].reshape(-1), episode[:, 3].reshape(-1)
         for i in range(1, 15):
-            if len(np.argwhere(traj == i)) != 0:
-                first_occurance, = np.argwhere(traj == i)[0]
-                subtrajectory = traj[first_occurance:]
+            if len(np.argwhere(trajectory == i)) != 0:
+                first_occurrence, = np.argwhere(trajectory == i)[0]
+                subtrajectory = trajectory[first_occurrence:]
                 subtrajectory_length = len(subtrajectory)
                 powers = np.power(self.gamma, np.arange(0, subtrajectory_length))
-                cum_return = np.sum(rwds[first_occurance:] * powers)
+                cum_return = np.sum(rewards[first_occurrence:] * powers)
                 self.state_value_estimates[i] = (self.state_value_estimates[i] * self.state_update_count[
                     i] + cum_return) / (self.state_update_count[i] + 1)
                 self.state_update_count[i] += 1
