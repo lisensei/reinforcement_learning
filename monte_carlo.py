@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.stats as st
 from collections import namedtuple
+import matplotlib as mpl
 
 '''This class creates the grid world environment'''
 transition = namedtuple("transition", ["state", "action", "next_state", "reward"])
@@ -75,7 +76,9 @@ class Agent:
         self.grid_world = np.arange(0, 16).reshape(-1, 4)
         self.policy = np.ones((num_states, num_actions)) / num_actions
         self.state_value_estimates = np.zeros(num_states)
+        self.action_value_estimates = np.zeros((num_states, num_actions))
         self.state_update_count = np.zeros(num_states)
+        self.action_value_update_count = np.zeros((num_states, num_actions))
         self.legal_moves = self.get_legal_moves()
         self.policy_update_count = 0
         self.gamma = gamma
@@ -83,6 +86,7 @@ class Agent:
     def get_episode(self):
         self.environment.reset()
         episode = []
+        episode_length = 0
         while not self.environment.episode_ended:
             current_state = np.copy(self.environment.current_state)
             action_pmf = st.rv_discrete(
@@ -90,13 +94,18 @@ class Agent:
             action = action_pmf.rvs(size=1)
             next_state, reward = self.environment.take_action(action)
             self.append = episode.append(transition(current_state, action, np.copy(next_state), reward))
-        episode = np.array(episode)
+            episode_length += 1
+            if episode_length % 100 == 0:
+                print(f"episode length gets large: {episode_length}")
         return episode
 
-    def update_value_estimates(self, episode):
+    def update_value_estimates(self, transitions):
         env = GridWorld()
         env.init_env()
+        episode_length = len(transitions)
+        episode = np.array(transitions).reshape(-1, 4)
         trajectory, rewards = episode[:, 0].reshape(-1), episode[:, 3].reshape(-1)
+        '''Computes state values'''
         for i in range(1, 15):
             if len(np.argwhere(trajectory == i)) != 0:
                 first_occurrence, = np.argwhere(trajectory == i)[0]
@@ -107,6 +116,27 @@ class Agent:
                 self.state_value_estimates[i] = (self.state_value_estimates[i] * self.state_update_count[
                     i] + cum_return) / (self.state_update_count[i] + 1)
                 self.state_update_count[i] += 1
+        whether_updated = dict()
+        for i, t in enumerate(episode):
+            s, a = t[0], t[1]
+            key = f"{s}-{a}"
+            if key in whether_updated:
+                # print(f"iteration:{i},state-action {s}-{a} already updated: continued")
+                continue
+            whether_updated[key] = 1
+            action_value = np.sum(rewards[i:] * self.gamma ** np.arange(
+                episode_length - i))
+            self.action_value_estimates[s, a] = (self.action_value_estimates[s, a] * \
+                                                 self.action_value_update_count[s, a] + action_value) / (
+                                                        self.action_value_update_count[s, a] + 1)
+            self.action_value_update_count[s, a] += 1
+        '''
+        state_values_from_action_values = np.sum(
+            self.action_value_estimates * self.policy, axis=1)
+        self.state_value_estimates = state_values_from_action_values
+        print(f"state values:\n{np.round(self.state_value_estimates, decimals=2).reshape(4, 4)}")
+        print(f"from action values:\n{np.round(state_values.reshape(4, 4), decimals=2)}")
+        '''
 
     '''Epsilon greedy and set equal probability for equal state values to avoid infinite loop'''
 
@@ -147,67 +177,104 @@ class Agent:
 
 class Canvas:
     def __init__(self, shape):
-        self.fig, self.axes = plt.subplots(1, 2, layout="constrained")
+        self.fig, self.axes = plt.subplot_mosaic([["state values", "policy"], ["action values", "action values"]],
+                                                 figsize=(14, 12),
+                                                 layout="constrained")
         initial_values = np.zeros(16).reshape(shape).transpose()
+        initial_action_values = np.zeros((16, 4)).transpose()
         '''Set state values axes'''
-        self.axes[0].axis("off")
-        self.axes[0].set_title("State Values Estimates")
-        self.axes[0].xaxis.tick_top()
-        self.axes[0].invert_yaxis()
-        self.axes[0].matshow(initial_values, cmap="Blues")
+        self.axes["state values"].axis("off")
+        self.axes["state values"].set_title("State Values Estimates")
+        self.axes["state values"].xaxis.tick_top()
+        self.axes["state values"].invert_yaxis()
+        self.axes["state values"].matshow(initial_values, cmap="Blues")
 
         '''Set policy axes'''
-        self.axes[1].set_title("Policy")
-        self.axes[1].axis("off")
-        self.axes[1].xaxis.tick_top()
-        self.axes[1].invert_yaxis()
-        self.axes[1].matshow(initial_values, cmap="Blues")
+        self.axes["policy"].set_title("Policy")
+        self.axes["policy"].axis("off")
+        self.axes["policy"].xaxis.tick_top()
+        self.axes["policy"].invert_yaxis()
+        self.axes["policy"].matshow(initial_values, cmap="Blues")
         self.arrow_head_width = 0.1
         self.arrow_head_length = 0.15
-        self.axes[1].scatter(0, 0, s=80, c="red", marker="o")
-        self.axes[1].scatter(3, 3, s=80, c="red", marker="o")
+        self.axes["policy"].scatter(0, 0, s=80, c="red", marker="o")
+        self.axes["policy"].scatter(3, 3, s=80, c="red", marker="o")
+
+        '''Set action value axes'''
+        self.axes["action values"].set_title("Action values", )
+        self.axes["action values"].xaxis.tick_top()
+        self.axes["action values"].invert_yaxis()
+        self.axes["action values"].set_xlabel("state")
+        self.axes["action values"].set_ylabel("action")
+        self.axes["action values"].set_yticks(np.arange(4), ["up", "down", "left", "right"])
+        self.axes["action values"].matshow(initial_action_values)
+
         for (i, j), v in np.ndenumerate(initial_values):
-            self.axes[0].text(i, j, str(v))
+            self.axes["state values"].text(i, j, str(v))
             if not ((i == 0 and j == 0) or (i == 3 and j == 3)):
-                self.axes[1].arrow(i, j, 0.1, 0, shape="full", head_width=self.arrow_head_width, color="green",
-                                   length_includes_head=False)
-                self.axes[1].arrow(i, j, 0, 0.1, shape="full", head_width=self.arrow_head_width, color="green",
-                                   length_includes_head=False)
-                self.axes[1].arrow(i, j, -0.1, 0, shape="full", head_width=self.arrow_head_width, color="green",
-                                   length_includes_head=False)
-                self.axes[1].arrow(i, j, 0, -0.1, shape="full", head_width=self.arrow_head_width, color="green",
-                                   length_includes_head=False)
+                self.axes["policy"].arrow(i, j, 0.1, 0, shape="full", head_width=self.arrow_head_width, color="green",
+                                          length_includes_head=False)
+                self.axes["policy"].arrow(i, j, 0, 0.1, shape="full", head_width=self.arrow_head_width, color="green",
+                                          length_includes_head=False)
+                self.axes["policy"].arrow(i, j, -0.1, 0, shape="full", head_width=self.arrow_head_width, color="green",
+                                          length_includes_head=False)
+                self.axes["policy"].arrow(i, j, 0, -0.1, shape="full", head_width=self.arrow_head_width, color="green",
+                                          length_includes_head=False)
+        for (i, j), v in np.ndenumerate(initial_action_values):
+            self.axes["action values"].text(j, i, str(v))
 
     '''Plot state values and policy. Only one policy is plotted'''
 
-    def repaint(self, values, policy):
-        self.axes[0].clear()
-        self.axes[0].set_title("State Values Estimates")
-        self.axes[0].axis("off")
-        self.axes[0].matshow(values, cmap="Blues")
+    def repaint(self, values, policy, action_values):
+        '''State values plotting'''
+        self.axes["state values"].clear()
+        self.axes["state values"].set_title("State Values Estimates")
+        self.axes["state values"].axis("off")
+        self.axes["state values"].matshow(values, cmap="Blues")
         for (i, j), v in np.ndenumerate(values):
-            self.axes[0].text(i, j, str(v))
-        self.axes[1].clear()
-        self.axes[1].set_title("Policy")
-        self.axes[1].axis("off")
-        self.axes[1].xaxis.tick_top()
-        self.axes[1].matshow(values, cmap="Blues")
-        self.axes[1].scatter(0, 0, s=80, c="red", marker="o")
-        self.axes[1].scatter(3, 3, s=80, c="red", marker="o")
+            self.axes["state values"].text(i, j, str(v))
+
+        '''Visualizing policy'''
+        self.axes["policy"].clear()
+        self.axes["policy"].set_title("Policy")
+        self.axes["policy"].axis("off")
+        self.axes["policy"].xaxis.tick_top()
+        self.axes["policy"].matshow(values, cmap="Blues")
+        self.axes["policy"].scatter(0, 0, s=80, c="red", marker="o")
+        self.axes["policy"].scatter(3, 3, s=80, c="red", marker="o")
+
+        '''Plot action values'''
+        transposed_action_values = np.round(action_values.transpose(), decimals=1)
+        labels = [str(i) for i in np.arange(16)]
+        self.axes["action values"].clear()
+        self.axes["action values"].set_title("Action values")
+        self.axes["action values"].set_xlabel("state")
+        self.axes["action values"].set_ylabel("action")
+        self.axes["action values"].set_xticks(np.arange(16))
+        self.axes["action values"].set_yticks(np.arange(4), ["up", "down", "left", "right"])
+        self.axes["action values"].matshow(transposed_action_values, )
+        self.axes["action values"].tick_params(width=1)
+
         for (i, j), v in np.ndenumerate(policy):
             if not ((i == 0 and j == 0) or (i == 3 and j == 3)):
                 if v == 0:
-                    self.axes[1].arrow(i, j, 0, -0.1, shape="full", head_width=self.arrow_head_width,
-                                       head_length=self.arrow_head_length, color="green", length_includes_head=False)
+                    self.axes["policy"].arrow(i, j, 0, -0.1, shape="full", head_width=self.arrow_head_width,
+                                              head_length=self.arrow_head_length, color="green",
+                                              length_includes_head=False)
                 if v == 1:
-                    self.axes[1].arrow(i, j, 0, 0.1, shape="full", head_width=self.arrow_head_width,
-                                       head_length=self.arrow_head_length, color="green", length_includes_head=False)
+                    self.axes["policy"].arrow(i, j, 0, 0.1, shape="full", head_width=self.arrow_head_width,
+                                              head_length=self.arrow_head_length, color="green",
+                                              length_includes_head=False)
                 if v == 2:
-                    self.axes[1].arrow(i, j, -0.1, 0, shape="full", head_width=self.arrow_head_width,
-                                       head_length=self.arrow_head_length, color="green", length_includes_head=False)
+                    self.axes["policy"].arrow(i, j, -0.1, 0, shape="full", head_width=self.arrow_head_width,
+                                              head_length=self.arrow_head_length, color="green",
+                                              length_includes_head=False)
                 if v == 3:
-                    self.axes[1].arrow(i, j, 0.1, 0, shape="full", head_width=self.arrow_head_width,
-                                       head_length=self.arrow_head_length, color="green", length_includes_head=False)
+                    self.axes["policy"].arrow(i, j, 0.1, 0, shape="full", head_width=self.arrow_head_width,
+                                              head_length=self.arrow_head_length, color="green",
+                                              length_includes_head=False)
+        for (i, j), v in np.ndenumerate(transposed_action_values):
+            self.axes["action values"].text(j, i, str(v))
 
 
 gw = GridWorld()
@@ -217,11 +284,11 @@ can = Canvas((4, 4))
 plt.figure(can.fig)
 plt.show()
 plt.pause(2)
-for i in range(20000):
-    if i % 25 == 0 and i != 0:
+for e in range(20000):
+    if e % 25 == 0 and e != 0:
         values = np.round(agent.state_value_estimates.reshape(-1, 4), decimals=1).transpose()
         policy = np.argmax(agent.policy, axis=1).reshape(-1, 4).transpose()
-        can.repaint(values, policy)
+        can.repaint(values, policy, agent.action_value_estimates)
         plt.pause(0.5)
     agent.update_value_estimates(agent.get_episode())
     agent.update_policy()
