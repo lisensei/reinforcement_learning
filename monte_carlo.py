@@ -183,34 +183,13 @@ class Canvas:
         initial_values = np.zeros(16).reshape(shape).transpose()
         initial_action_values = np.zeros((16, 4)).transpose()
         '''Set state values axes'''
-        self.axes["state values"].axis("off")
-        self.axes["state values"].set_title("State Values Estimates")
-        self.axes["state values"].xaxis.tick_top()
         self.axes["state values"].invert_yaxis()
-        self.axes["state values"].matshow(initial_values, cmap="Blues")
+        self.set_state_value_plot(initial_values)
 
         '''Set policy axes'''
-        self.axes["policy"].set_title("Policy")
-        self.axes["policy"].axis("off")
-        self.axes["policy"].xaxis.tick_top()
         self.axes["policy"].invert_yaxis()
-        self.axes["policy"].matshow(initial_values, cmap="Blues")
-        self.arrow_head_width = 0.1
-        self.arrow_head_length = 0.15
-        self.axes["policy"].scatter(0, 0, s=80, c="red", marker="o")
-        self.axes["policy"].scatter(3, 3, s=80, c="red", marker="o")
-
-        '''Set action value axes'''
-        self.axes["action values"].set_title("Action values", )
-        self.axes["action values"].xaxis.tick_top()
-        self.axes["action values"].invert_yaxis()
-        self.axes["action values"].set_xlabel("state")
-        self.axes["action values"].set_ylabel("action")
-        self.axes["action values"].set_yticks(np.arange(4), ["up", "down", "left", "right"])
-        self.axes["action values"].matshow(initial_action_values)
-
+        self.set_policy_plot(initial_values, initial_values)
         for (i, j), v in np.ndenumerate(initial_values):
-            self.axes["state values"].text(i, j, str(v))
             if not ((i == 0 and j == 0) or (i == 3 and j == 3)):
                 self.axes["policy"].arrow(i, j, 0.1, 0, shape="full", head_width=self.arrow_head_width, color="green",
                                           length_includes_head=False)
@@ -220,41 +199,28 @@ class Canvas:
                                           length_includes_head=False)
                 self.axes["policy"].arrow(i, j, 0, -0.1, shape="full", head_width=self.arrow_head_width, color="green",
                                           length_includes_head=False)
-        for (i, j), v in np.ndenumerate(initial_action_values):
-            self.axes["action values"].text(j, i, str(v))
+        '''Set action value axes'''
+        self.axes["action values"].invert_yaxis()
+        self.set_action_value_plot(initial_action_values)
 
     '''Plot state values and policy. Only one policy is plotted'''
 
-    def repaint(self, values, policy, action_values):
-        '''State values plotting'''
-        self.axes["state values"].clear()
-        self.axes["state values"].set_title("State Values Estimates")
+    def set_state_value_plot(self, state_values):
         self.axes["state values"].axis("off")
-        self.axes["state values"].matshow(values, cmap="Blues")
-        for (i, j), v in np.ndenumerate(values):
+        self.axes["state values"].set_title("State Values Estimates")
+        self.axes["state values"].matshow(state_values, cmap="Blues")
+        for (i, j), v in np.ndenumerate(state_values):
             self.axes["state values"].text(i, j, str(v))
 
-        '''Visualizing policy'''
-        self.axes["policy"].clear()
+    def set_policy_plot(self, state_values, policy):
         self.axes["policy"].set_title("Policy")
         self.axes["policy"].axis("off")
         self.axes["policy"].xaxis.tick_top()
-        self.axes["policy"].matshow(values, cmap="Blues")
+        self.axes["policy"].matshow(state_values, cmap="Blues")
+        self.arrow_head_width = 0.1
+        self.arrow_head_length = 0.15
         self.axes["policy"].scatter(0, 0, s=80, c="red", marker="o")
         self.axes["policy"].scatter(3, 3, s=80, c="red", marker="o")
-
-        '''Plot action values'''
-        transposed_action_values = np.round(action_values.transpose(), decimals=1)
-        labels = [str(i) for i in np.arange(16)]
-        self.axes["action values"].clear()
-        self.axes["action values"].set_title("Action values")
-        self.axes["action values"].set_xlabel("state")
-        self.axes["action values"].set_ylabel("action")
-        self.axes["action values"].set_xticks(np.arange(16))
-        self.axes["action values"].set_yticks(np.arange(4), ["up", "down", "left", "right"])
-        self.axes["action values"].matshow(transposed_action_values, )
-        self.axes["action values"].tick_params(width=1)
-
         for (i, j), v in np.ndenumerate(policy):
             if not ((i == 0 and j == 0) or (i == 3 and j == 3)):
                 if v == 0:
@@ -273,8 +239,32 @@ class Canvas:
                     self.axes["policy"].arrow(i, j, 0.1, 0, shape="full", head_width=self.arrow_head_width,
                                               head_length=self.arrow_head_length, color="green",
                                               length_includes_head=False)
-        for (i, j), v in np.ndenumerate(transposed_action_values):
+
+    def set_action_value_plot(self, action_values):
+        self.axes["action values"].set_title("Action values Estimates", )
+        self.axes["action values"].matshow(action_values, cmap="plasma")
+        self.axes["action values"].xaxis.tick_bottom()
+        self.axes["action values"].xaxis.set_major_locator(mpl.ticker.MultipleLocator(1))
+        self.axes["action values"].set_xlabel("State")
+        self.axes["action values"].set_ylabel("Action")
+        self.axes["action values"].tick_params(bottom=None, top=None, left=None, right=None)
+        self.axes["action values"].set_yticks(np.arange(4), ["Up", "Down", "Left", "Right"])
+        for (i, j), v in np.ndenumerate(action_values):
             self.axes["action values"].text(j, i, str(v))
+
+    def repaint(self, values, policy, action_values):
+        '''State values plotting'''
+        self.axes["state values"].clear()
+        self.set_state_value_plot(values)
+
+        '''Visualizing policy'''
+        self.axes["policy"].clear()
+        self.set_policy_plot(values, policy)
+
+        '''Plot action values'''
+        transposed_action_values = np.round(action_values.transpose(), decimals=1)
+        self.axes["action values"].clear()
+        self.set_action_value_plot(transposed_action_values)
 
 
 gw = GridWorld()
