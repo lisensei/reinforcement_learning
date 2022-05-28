@@ -12,9 +12,11 @@ transition = namedtuple("transition", ["state", "action", "next_state", "reward"
 
 
 class GridWorld:
-    def __init__(self):
-        self.action_space = np.arange(0, 4)
-        self.environment = np.arange(0, 16).reshape(-1, 4)
+    def __init__(self, num_states=16, num_actions=4):
+        self.num_states = num_states
+        self.num_actions = num_actions
+        self.action_space = np.arange(0, num_actions)
+        self.environment = np.arange(0, num_states).reshape(-1, 4)
         self.initial_state = None
         self.current_state = None
         self.episode_ended = False
@@ -99,6 +101,8 @@ class Agent:
                 print(f"episode length gets large: {episode_length}")
         return episode
 
+    ''' update both state value estimates and action value estimates'''
+
     def update_value_estimates(self, transitions):
         env = GridWorld()
         env.init_env()
@@ -140,7 +144,13 @@ class Agent:
 
     '''Epsilon greedy and set equal probability for equal state values to avoid infinite loop'''
 
-    def update_policy(self, eps=0.1):
+    def update_policy(self, **kwargs):
+        algorithm_dict = {"value_iteration": self.value_iteration,
+                          "policy_iteration": self.policy_iteration}
+        algorithm = algorithm_dict[kwargs["algorithm"]]
+        algorithm(kwargs["eps"])
+
+    def value_iteration(self, eps=0.1):
         eps = eps ** (1 + self.policy_update_count / 1000) if eps != 0 else eps
         for j in range(1, 15):
             reachable_state_value = self.state_value_estimates[self.legal_moves[j, :]]
@@ -152,6 +162,15 @@ class Agent:
                 self.policy[j, optimal_action] = (1 - eps) / num_optimal_actions
             else:
                 self.policy[j, :] = np.ones((1, 4)) / 4
+        self.policy_update_count += 1
+
+    def policy_iteration(self, eps=0.1):
+        eps = eps ** (1 + self.policy_update_count / 1000) if eps != 0 else eps
+        optimal_actions = np.argmax(self.action_value_estimates, axis=1)
+        new_policy = np.zeros((self.environment.num_states, self.environment.num_actions)) + eps / (
+                self.environment.num_actions - 1)
+        new_policy[np.arange(16), optimal_actions] = 1 - eps
+        self.policy = new_policy
         self.policy_update_count += 1
 
     def get_legal_moves(self):
@@ -281,4 +300,4 @@ for e in range(20000):
         can.repaint(values, policy, agent.action_value_estimates)
         plt.pause(0.5)
     agent.update_value_estimates(agent.get_episode())
-    agent.update_policy()
+    agent.update_policy(algorithm="value_iteration", eps=0.1)
