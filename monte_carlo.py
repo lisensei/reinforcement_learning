@@ -14,9 +14,10 @@ transition = namedtuple("transition", ["state", "action", "next_state", "reward"
 class GridWorld:
     def __init__(self, num_states=16, num_actions=4):
         self.num_states = num_states
+        self.shape = (4, 4)
         self.num_actions = num_actions
         self.action_space = np.arange(0, num_actions)
-        self.environment = np.arange(0, num_states).reshape(-1, 4)
+        self.environment = np.arange(0, num_states).reshape(self.shape)
         self.initial_state = None
         self.current_state = None
         self.episode_ended = False
@@ -84,6 +85,7 @@ class Agent:
         self.legal_moves = self.get_legal_moves()
         self.policy_update_count = 0
         self.gamma = gamma
+        self.algorithm = None
 
     def get_episode(self):
         self.environment.reset()
@@ -149,6 +151,7 @@ class Agent:
                           "policy_iteration": self.policy_iteration}
         algorithm = algorithm_dict[kwargs["algorithm"]]
         algorithm(kwargs["eps"])
+        self.algorithm = kwargs["algorithm"]
 
     def value_iteration(self, eps=0.1):
         eps = eps ** (1 + self.policy_update_count / 1000) if eps != 0 else eps
@@ -166,10 +169,17 @@ class Agent:
 
     def policy_iteration(self, eps=0.1):
         eps = eps ** (1 + self.policy_update_count / 1000) if eps != 0 else eps
-        optimal_actions = np.argmax(self.action_value_estimates, axis=1)
-        new_policy = np.zeros((self.environment.num_states, self.environment.num_actions)) + eps / (
-                self.environment.num_actions - 1)
-        new_policy[np.arange(16), optimal_actions] = 1 - eps
+        optimal_actions = np.max(self.action_value_estimates, axis=1).reshape(self.environment.num_states, 1)
+        indices = np.argwhere(self.action_value_estimates == optimal_actions)
+        new_policy = np.zeros((self.environment.num_states, self.environment.num_actions))
+        for s in range(1, 15):
+            state_optimal_actions = np.array([a for a in indices if a[0] == s])
+            num_optimal_actions = len(state_optimal_actions)
+            if num_optimal_actions == 4:
+                new_policy[s, :] = 1 / self.environment.num_actions
+            else:
+                new_policy[s] = new_policy[s] + eps / (self.environment.num_actions - num_optimal_actions)
+                new_policy[state_optimal_actions[:, 0], state_optimal_actions[:, 1]] = (1 - eps) / num_optimal_actions
         self.policy = new_policy
         self.policy_update_count += 1
 
@@ -195,29 +205,25 @@ class Agent:
 
 
 class Canvas:
-    def __init__(self, shape):
+    def __init__(self, env):
         self.fig, self.axes = plt.subplot_mosaic([["state values", "policy"], ["action values", "action values"]],
                                                  figsize=(14, 12),
                                                  layout="constrained")
-        initial_values = np.zeros(16).reshape(shape).transpose()
-        initial_action_values = np.zeros((16, 4)).transpose()
+        initial_values = np.zeros(env.num_states).reshape(env.shape).transpose()
+        initial_action_values = np.zeros((env.num_states, env.num_actions)).transpose()
+        initial_policy = np.zeros((env.num_states, env.num_actions))
+        self.grid_world = np.arange(env.num_states).reshape(env.shape)
         '''Set state values axes'''
         self.axes["state values"].invert_yaxis()
         self.set_state_value_plot(initial_values)
 
         '''Set policy axes'''
         self.axes["policy"].invert_yaxis()
-        self.set_policy_plot(initial_values, initial_values)
+        self.set_policy_plot(initial_values, initial_policy, "")
         for (i, j), v in np.ndenumerate(initial_values):
             if not ((i == 0 and j == 0) or (i == 3 and j == 3)):
-                self.axes["policy"].arrow(i, j, 0.1, 0, shape="full", head_width=self.arrow_head_width, color="green",
-                                          length_includes_head=False)
-                self.axes["policy"].arrow(i, j, 0, 0.1, shape="full", head_width=self.arrow_head_width, color="green",
-                                          length_includes_head=False)
-                self.axes["policy"].arrow(i, j, -0.1, 0, shape="full", head_width=self.arrow_head_width, color="green",
-                                          length_includes_head=False)
-                self.axes["policy"].arrow(i, j, 0, -0.1, shape="full", head_width=self.arrow_head_width, color="green",
-                                          length_includes_head=False)
+                for a in range(env.num_actions):
+                    self.plot_arrow(i, j, a)
         '''Set action value axes'''
         self.axes["action values"].invert_yaxis()
         self.set_action_value_plot(initial_action_values)
@@ -231,8 +237,8 @@ class Canvas:
         for (i, j), v in np.ndenumerate(state_values):
             self.axes["state values"].text(i, j, str(v))
 
-    def set_policy_plot(self, state_values, policy):
-        self.axes["policy"].set_title("Policy")
+    def set_policy_plot(self, state_values, policy_values, algorithm, show_all_policy=True):
+        self.axes["policy"].set_title(f"Policy learned with {' '.join(algorithm.split('_'))}")
         self.axes["policy"].axis("off")
         self.axes["policy"].xaxis.tick_top()
         self.axes["policy"].matshow(state_values, cmap="Blues")
@@ -240,24 +246,25 @@ class Canvas:
         self.arrow_head_length = 0.15
         self.axes["policy"].scatter(0, 0, s=80, c="red", marker="o")
         self.axes["policy"].scatter(3, 3, s=80, c="red", marker="o")
-        for (i, j), v in np.ndenumerate(policy):
-            if not ((i == 0 and j == 0) or (i == 3 and j == 3)):
-                if v == 0:
-                    self.axes["policy"].arrow(i, j, 0, -0.1, shape="full", head_width=self.arrow_head_width,
-                                              head_length=self.arrow_head_length, color="green",
-                                              length_includes_head=False)
-                if v == 1:
-                    self.axes["policy"].arrow(i, j, 0, 0.1, shape="full", head_width=self.arrow_head_width,
-                                              head_length=self.arrow_head_length, color="green",
-                                              length_includes_head=False)
-                if v == 2:
-                    self.axes["policy"].arrow(i, j, -0.1, 0, shape="full", head_width=self.arrow_head_width,
-                                              head_length=self.arrow_head_length, color="green",
-                                              length_includes_head=False)
-                if v == 3:
-                    self.axes["policy"].arrow(i, j, 0.1, 0, shape="full", head_width=self.arrow_head_width,
-                                              head_length=self.arrow_head_length, color="green",
-                                              length_includes_head=False)
+        if not show_all_policy:
+            single_action_policy = np.argmax(policy_values, axis=1).reshape(-1, 4).transpose()
+            for (i, j), v in np.ndenumerate(single_action_policy):
+                if not ((i == 0 and j == 0) or (i == 3 and j == 3)):
+                    self.plot_arrow(i, j, v)
+        else:
+            index_map = self.grid_world.transpose()
+            for s in range(1, 15):
+                [[i, j]] = np.argwhere(index_map == s)
+                optimal_actions = np.argwhere(policy_values[s] == np.max(policy_values[s])).reshape(-1)
+                for a in optimal_actions:
+                    self.plot_arrow(i, j, a)
+
+    def plot_arrow(self, i, j, action):
+        arrow_coordinate = {0: (0, -0.1), 1: (0, 0.1), 2: (-0.1, 0), 3: (0.1, 0)}
+        arrow = arrow_coordinate[action]
+        self.axes["policy"].arrow(i, j, *arrow, shape="full", head_width=self.arrow_head_width,
+                                  head_length=self.arrow_head_length, color="green",
+                                  length_includes_head=False)
 
     def set_action_value_plot(self, action_values):
         self.axes["action values"].set_title("Action values Estimates", )
@@ -271,14 +278,14 @@ class Canvas:
         for (i, j), v in np.ndenumerate(action_values):
             self.axes["action values"].text(j, i, str(v))
 
-    def repaint(self, values, policy, action_values):
+    def repaint(self, values, policy, action_values, algorithm):
         '''State values plotting'''
         self.axes["state values"].clear()
         self.set_state_value_plot(values)
 
         '''Visualizing policy'''
         self.axes["policy"].clear()
-        self.set_policy_plot(values, policy)
+        self.set_policy_plot(values, policy, algorithm)
 
         '''Plot action values'''
         transposed_action_values = np.round(action_values.transpose(), decimals=1)
@@ -289,15 +296,14 @@ class Canvas:
 gw = GridWorld()
 agent = Agent(gw)
 plt.ion()
-can = Canvas((4, 4))
+can = Canvas(gw)
 plt.figure(can.fig)
 plt.show()
 plt.pause(2)
 for e in range(20000):
     if e % 25 == 0 and e != 0:
         values = np.round(agent.state_value_estimates.reshape(-1, 4), decimals=1).transpose()
-        policy = np.argmax(agent.policy, axis=1).reshape(-1, 4).transpose()
-        can.repaint(values, policy, agent.action_value_estimates)
+        can.repaint(values, agent.policy, agent.action_value_estimates, agent.algorithm)
         plt.pause(0.5)
     agent.update_value_estimates(agent.get_episode())
     agent.update_policy(algorithm="value_iteration", eps=0.1)
