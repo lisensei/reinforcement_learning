@@ -1,6 +1,5 @@
 """
 Deep Q learning on Cartpole-v1
-
 """
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,7 +8,18 @@ import torch.nn as nn
 import gym
 from collections import namedtuple, deque
 import scipy.stats as st
-import random
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-steps", default=20000)
+parser.add_argument("-bnet_update_rate", default=10)
+parser.add_argument("-composite_state_length", default=5)
+parser.add_argument("-hidden_size", default=128)
+parser.add_argument("-eps", default=0.5)
+parser.add_argument("-gamma", default=1)
+parser.add_argument("-learning_rate", default=1e-2)
+parser.add_argument("-show_rate", default=100)
+parameters = parser.parse_args()
 
 transition = namedtuple("transition", ["state", "action", "reward", "next_state", "done"])
 
@@ -46,6 +56,7 @@ class RQNET(nn.Module):
         else:
             x = x.unsqueeze(0)
             hidden_state, _ = self.lstm(x)
+            hidden_state, _ = self.lstm1(hidden_state)
             output = self.output(hidden_state[-1, -1])
             output = output.reshape(num_actions)
         return output
@@ -74,6 +85,27 @@ class QNET(nn.Module):
         return output
 
 
+def test(policy_net):
+    test_env = gym.envs.make("CartPole-v1")
+    test_state = test_env.reset()
+    if not is_rnn:
+        test_state = test_state[-1]
+    end = False
+    test_reward = 0
+    while not end:
+        test_state_deque.append(torch.tensor(test_state))
+        test_deque_len = len(test_state_deque)
+        test_state = torch.cat(list(test_state_deque)).reshape(test_deque_len, -1)
+        with torch.no_grad():
+            qvalues = policy_net(test_state)
+        action = torch.argmax(qvalues).numpy()
+        test_state, reward, end, _ = test_env.step(action)
+        test_reward += reward
+        test_env.render()
+    print(f"test reward:{test_reward}")
+    test_env.close()
+
+
 def normalize_state(state):
     position_max_abs = 4.8
     cv_max_abs = 0.835
@@ -87,18 +119,20 @@ def normalize_state(state):
 
 
 num_actions = 2
+state_size = 4
 '''
 policy net is the actual net that learns parameters.
 behavior net generates episodes.
 '''
-policy_net = RQNET(4, 128, 2)
-behavior_net = RQNET(4, 128, 2)
+policy_net = RQNET(state_size, parameters.hidden_size, num_actions)
+behavior_net = RQNET(state_size, parameters.hidden_size, num_actions)
 
-steps = 20000
+is_rnn = isinstance(policy_net, RQNET)
+steps = parameters.steps
 env = gym.envs.make("CartPole-v1")
 state = env.reset()
 loss = nn.MSELoss()
-optimizer = torch.optim.Adam(policy_net.parameters(), lr=1)
+optimizer = torch.optim.Adam(policy_net.parameters(), lr=parameters.learning_rate)
 tds = []
 Returns = []
 plt.ion()
@@ -106,23 +140,22 @@ fig, axes = plt.subplots(2, 1)
 plt.show()
 
 '''n is the frequency at which the behavior net copies policy net's parameters'''
-n = 10
 Return = 0
 episode = 0
 
 '''max sequence length for recurrent dqn'''
-state_deque = deque(maxlen=5)
-
-for e in range(steps):
+state_deque = deque(maxlen=parameters.composite_state_length)
+test_state_deque = deque(maxlen=parameters.composite_state_length)
+for e in range(parameters.steps):
     state_deque.append(torch.tensor(state))
     deque_len = len(state_deque)
     state = torch.cat(list(state_deque)).reshape(deque_len, -1)
-    if not isinstance(policy_net, RQNET):
+    if not is_rnn:
         state = state[-1]
     with torch.no_grad():
         '''computes state action values while following behavior net'''
         behavior_state_actions = behavior_net(state)
-    eps = 0.5 ** (1000 / (e + 1000))
+    eps = parameters.eps ** (1000 / (e + 1000))
     probilities = np.ones(num_actions) * eps / num_actions
 
     '''computes the actions that policy net should take'''
@@ -146,6 +179,7 @@ for e in range(steps):
     if done:
         td_target = torch.tensor(reward)
         state = env.reset()
+        state_deque.clear()
         Returns.append(Return)
         Return = 0
         episode += 1
@@ -164,20 +198,8 @@ for e in range(steps):
     x = np.arange(0, e + 1)
     tds.append(temporal_difference.detach().numpy())
     axes[0].plot(x, tds)
-    plt.pause(0.005)
-    if e % n == 0:
+    plt.pause(0.00001)
+    if e % parameters.bnet_update_rate == 0:
         behavior_net.load_state_dict(policy_net.state_dict())
-    if e % 100 == 0:
-        test_env = gym.envs.make("CartPole-v1")
-        state = test_env.reset()
-        end = False
-        test_reward = 0
-        while not end:
-            with torch.no_grad():
-                qvalues = policy_net(state)
-            action = torch.argmax(qvalues).numpy()
-            state, reward, end, _ = test_env.step(action)
-            test_reward += reward
-            test_env.render()
-        print(f"test reward:{test_reward}")
-        test_env.close()
+    if e % parameters.show_rate == 0:
+        test(policy_net)
