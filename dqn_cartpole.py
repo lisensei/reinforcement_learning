@@ -12,8 +12,8 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-steps", default=20000)
-parser.add_argument("-bnet_update_rate", default=5)
-parser.add_argument("-composite_state_length", default=3)
+parser.add_argument("-bnet_update_rate", default=10)
+parser.add_argument("-composite_state_length", default=5)
 parser.add_argument("-hidden_size", default=256)
 parser.add_argument("-eps", default=0.3)
 parser.add_argument("-gamma", default=1)
@@ -47,19 +47,19 @@ class RQNET(nn.Module):
             x = x.unsqueeze(0)
         if not lstm:
             hidden_input = torch.cat([x[0], self.activator])
-            hidden_state = torch.relu(self.hidden_to_hidden(hidden_input))
+            hidden_state = torch.tanh(self.hidden_to_hidden(hidden_input))
             x = x[1:, :]
             for s in x:
                 hidden_input = torch.cat([s, hidden_state])
-                hidden_state = torch.relu(self.hidden_to_hidden(hidden_input))
-            output = torch.relu(self.output(hidden_state))
+                hidden_state = torch.tanh(self.hidden_to_hidden(hidden_input))
+            output = torch.tanh(self.output(hidden_state))
         else:
             x = x.unsqueeze(0)
             hidden_state, _ = self.lstm(x)
             # hidden_state, _ = self.lstm1(hidden_state)
             output = self.output(hidden_state[-1, -1])
             output = output.reshape(num_actions)
-        return output
+        return torch.tanh(output)
 
 
 '''Linear deep Q net'''
@@ -103,15 +103,15 @@ state_size = 4
 policy net is the actual net that learns parameters.
 behavior net generates episodes.
 '''
-policy_net = RQNET(state_size, parameters.hidden_size, num_actions)
-behavior_net = RQNET(state_size, parameters.hidden_size, num_actions)
+q_base_net = RQNET(state_size, parameters.hidden_size, num_actions)
+q_evolving_net = RQNET(state_size, parameters.hidden_size, num_actions)
 
-is_rnn = isinstance(policy_net, RQNET)
+is_rnn = isinstance(q_base_net, RQNET)
 steps = parameters.steps
 env = gym.envs.make("CartPole-v1")
 state = env.reset()
 loss = nn.MSELoss()
-optimizer = torch.optim.Adam(policy_net.parameters(), lr=parameters.learning_rate)
+optimizer = torch.optim.Adam(q_base_net.parameters(), lr=parameters.learning_rate)
 tds = []
 Returns = []
 test_returns = []
@@ -129,24 +129,22 @@ for e in range(parameters.steps):
     state_deque.append(torch.tensor(state))
     deque_len = len(state_deque)
     state = torch.cat(list(state_deque)).reshape(deque_len, -1)
-    with torch.no_grad():
-        '''computes state action values while following behavior net'''
-        behavior_state_actions = behavior_net(state)
+    '''computes state action values while following behavior net'''
+    evolving_state_actions = q_evolving_net(state)
     eps = parameters.eps ** ((e + 200) / 200)
     probilities = np.ones(num_actions) * eps / num_actions
 
     '''computes the actions that policy net should take'''
-    max_action_index = torch.argmax(behavior_state_actions).numpy()
+    max_action_index = torch.argmax(evolving_state_actions).numpy()
 
     probilities[max_action_index] = 1 - eps + eps / num_actions
     action_rv = st.rv_discrete(values=(np.arange(2), probilities))
     action_selected = action_rv.rvs()
 
     '''computes Q(s,a)'''
-    q_state_actions = policy_net(state)
-    q_state_action = q_state_actions[action_selected]
+    q_state_action = evolving_state_actions[action_selected]
 
-    '''behavior net interacts with the environment'''
+    '''evolving net interacts with the environment'''
     state, reward, done, _ = env.step(action_selected)
 
     Return += reward
@@ -168,7 +166,7 @@ for e in range(parameters.steps):
         state_prime = torch.cat(list(state_deque_copy)).reshape(len(state_deque_copy), -1)
         with torch.no_grad():
             ''' computes max of Q(s',a')'''
-            q_next_state_action = torch.argmax(policy_net(state_prime))
+            q_next_state_action = torch.max(q_base_net(state_prime))
         td_target = q_next_state_action + reward
 
     '''Computes temporal difference'''
@@ -186,9 +184,9 @@ for e in range(parameters.steps):
     axes[0].set_ylabel("td error")
     plt.pause(0.00001)
     if e % parameters.bnet_update_rate == 0:
-        behavior_net.load_state_dict(policy_net.state_dict())
+        q_base_net.load_state_dict(q_evolving_net.state_dict())
     if e % parameters.show_rate == 0:
-        tr = test(policy_net)
+        tr = test(q_base_net)
         test_returns.append(tr)
         num_test += 1
         s = np.arange(num_test)
