@@ -71,7 +71,7 @@ class Experience:
     def sort(self, key=None):
         self.experience = sorted(self.experience, key)
 
-    def replay(self, basenet, evolve_net, loss_fn, optimizer):
+    def replay(self, qnet, target_net, loss_fn, optimizer):
         transitions = self.sample()
         states = torch.tensor(np.array([t.state for t in transitions]))
         actions = torch.tensor(np.array([t.action for t in transitions]), dtype=torch.long)
@@ -80,11 +80,11 @@ class Experience:
         terminal_states = np.array([t.done for t in transitions])
         ts = np.argwhere(terminal_states == True).reshape(1, -1)
         '''Computes Q(s,a)'''
-        action_values = evolve_net(states)
+        action_values = target_net(states)
         action_values = action_values[np.arange(len(action_values)), actions]
         '''Computes max of Q(s',a')'''
         with torch.no_grad():
-            next_action_values = basenet(next_states)
+            next_action_values = qnet(next_states)
             next_action_values, _ = torch.max(next_action_values, 1)
         td_target = rewards + next_action_values
         td_target[ts] = rewards[ts]
@@ -129,15 +129,15 @@ state_size = 4
 policy net is the actual net that learns parameters.
 behavior net generates episodes.
 '''
-q_base_net = QNET(state_size, )
-q_evolving_net = QNET(state_size)
+q_net = QNET(state_size, )
+q_target_net = QNET(state_size)
 experience = Experience()
 
 steps = parameters.steps
 env = gym.envs.make("CartPole-v1")
 state = env.reset()
 loss = nn.MSELoss()
-optimizer = torch.optim.Adam(q_base_net.parameters(), lr=parameters.learning_rate)
+optimizer = torch.optim.Adam(q_target_net.parameters(), lr=parameters.learning_rate)
 tds = []
 Returns = []
 test_returns = []
@@ -154,15 +154,15 @@ state_deque = deque(maxlen=parameters.composite_state_length)
 for e in range(parameters.steps):
     '''computes state action values while following behavior net'''
     exp_state = np.copy(state)
-    evolving_state_actions = q_evolving_net(torch.tensor(state))
+    evolving_state_actions = q_target_net(torch.tensor(state))
     eps = parameters.eps ** ((e + 200) / 200)
-    probilities = np.ones(num_actions) * eps / num_actions
+    probabilities = np.ones(num_actions) * eps / num_actions
 
     '''computes the actions that evolving net should take'''
     max_action_index = torch.argmax(evolving_state_actions).numpy()
 
-    probilities[max_action_index] = 1 - eps + eps / num_actions
-    action_rv = st.rv_discrete(values=(np.arange(2), probilities))
+    probabilities[max_action_index] = 1 - eps + eps / num_actions
+    action_rv = st.rv_discrete(values=(np.arange(2), probabilities))
     action_selected = action_rv.rvs()
 
     '''evolving net interacts with the environment'''
@@ -180,7 +180,7 @@ for e in range(parameters.steps):
         axes[0].set_ylabel("return")
         axes[0].set_title("Episode Return")
     if e > parameters.batch_size:
-        td = experience.replay(q_base_net, q_evolving_net, loss, optimizer)
+        td = experience.replay(q_net, q_target_net, loss, optimizer)
         tds.append(td)
         axes[1].plot(np.arange(len(tds)), tds)
         axes[1].set_xlabel("step")
@@ -188,9 +188,9 @@ for e in range(parameters.steps):
         axes[1].set_title("Replay Loss")
     plt.pause(0.00001)
     if e % parameters.bnet_update_rate == 0:
-        q_base_net.load_state_dict(q_evolving_net.state_dict())
+        q_net.load_state_dict(q_target_net.state_dict())
     if e % parameters.show_rate == 0:
-        tr = test(q_base_net)
+        tr = test(q_target_net)
         test_returns.append(tr)
         num_test += 1
         s = np.arange(num_test)
