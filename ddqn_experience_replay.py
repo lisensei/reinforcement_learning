@@ -22,10 +22,11 @@ parser.add_argument("-eps", default=0.3)
 parser.add_argument("-gamma", default=1)
 parser.add_argument("-learning_rate", default=1e-2)
 parser.add_argument("-show_rate", default=50)
-parser.add_argument("-batch_size", default=16)
+parser.add_argument("-batch_size", default=32)
+parser.add_argument("-priority_sampling", default=1)
 parameters = parser.parse_args()
 
-transition = namedtuple("transition", ["state", "action", "reward", "next_state", "done"])
+transition = namedtuple("transition", ["state", "action", "reward", "next_state", "done", "td_error"])
 
 '''Linear deep Q net'''
 
@@ -60,19 +61,32 @@ class Experience:
     def __getitem__(self, index):
         return self.experience[index]
 
-    def sample(self, batch_size=16):
-        indices = random.sample(range(0, len(self.experience)), batch_size)
-        batch = [self.experience[i] for i in indices]
+    def sample(self, batch_size, priority_sampling=False):
+        if priority_sampling:
+            tds = torch.tensor([exp.td_error for exp in self.experience])
+            tds = torch.clip(tds, 0, 5)
+            k = np.arange(len(self.experience))
+            p = torch.softmax(tds, 0).numpy()
+            sampler = st.rv_discrete(values=(k, p))
+            if len(self.experience) > batch_size:
+                indices = sampler.rvs(size=batch_size)
+            else:
+                indices = sampler.rvs(size=len(self.experience))
+            indices = np.unique(indices)
+            batch = [self.experience[i] for i in indices]
+        else:
+            if len(self.experience) > batch_size:
+                indices = random.sample(range(0, len(self.experience)), batch_size)
+            else:
+                indices = random.sample(range(0, len(self.experience)), len(self.experience))
+            batch = [self.experience[i] for i in indices]
         return batch
 
     def append(self, x):
         self.experience.append(x)
 
-    def sort(self, key=None):
-        self.experience = sorted(self.experience, key)
-
-    def replay(self, qnet, target_net, loss_fn, optimizer):
-        transitions = self.sample()
+    def replay(self, qnet, target_net, loss_fn, optimizer, batch_size, priority_sampling):
+        transitions = self.sample(batch_size, priority_sampling)
         states = torch.tensor(np.array([t.state for t in transitions]))
         actions = torch.tensor(np.array([t.action for t in transitions]), dtype=torch.long)
         next_states = torch.tensor(np.array([t.next_state for t in transitions]))
@@ -109,6 +123,18 @@ def test(net):
         test_env.render()
     test_env.close()
     return test_reward
+
+
+@torch.no_grad()
+def computes_td(policy_net, target_net, state, action, reward, next_state, done):
+    if done:
+        td = reward
+    else:
+        q_state_action = policy_net(torch.tensor(state))[action]
+        q_next_state_action = torch.max(target_net(torch.tensor(next_state)))
+        td = q_next_state_action + reward - q_state_action
+
+    return td
 
 
 def normalize_state(state):
@@ -167,7 +193,9 @@ for e in range(parameters.steps):
 
     '''evolving net interacts with the environment'''
     state, reward, done, _ = env.step(action_selected)
-    exp_transition = transition(exp_state, action_selected, reward, np.copy(state), done)
+    td_error = computes_td(q_net, q_target_net, state, action_selected, reward, np.copy(state), done)
+    exp_transition = transition(exp_state, action_selected, reward, np.copy(state), done, td_error)
+
     Return += reward
     experience.append(exp_transition)
     if done:
@@ -180,7 +208,8 @@ for e in range(parameters.steps):
         axes[0].set_ylabel("return")
         axes[0].set_title("Episode Return")
     if e > parameters.batch_size:
-        td = experience.replay(q_net, q_target_net, loss, optimizer)
+        td = experience.replay(q_net, q_target_net, loss, optimizer, parameters.batch_size,
+                               parameters.priority_sampling)
         tds.append(td)
         axes[1].plot(np.arange(len(tds)), tds)
         axes[1].set_xlabel("step")
