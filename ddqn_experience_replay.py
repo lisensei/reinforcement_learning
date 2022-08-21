@@ -12,6 +12,7 @@ from collections import namedtuple, deque
 import scipy.stats as st
 import argparse
 import copy
+import math
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-steps", default=20000)
@@ -36,13 +37,13 @@ class QNET(nn.Module):
         super(QNET, self).__init__()
         self.layers = nn.Sequential(
             nn.Linear(state_size, 32),
-            nn.LeakyReLU(0.1),
+            nn.ReLU(),
             nn.Linear(32, 32),
-            nn.LeakyReLU(0.1),
+            nn.ReLU(),
             nn.Linear(32, 64),
-            nn.LeakyReLU(0.1),
+            nn.ReLU(),
             nn.Linear(64, 64),
-            nn.LeakyReLU(0.1),
+            nn.ReLU(),
             nn.Linear(64, 2),
 
         )
@@ -64,7 +65,6 @@ class Experience:
     def sample(self, batch_size, priority_sampling=False):
         if priority_sampling:
             tds = torch.tensor([exp.td_error for exp in self.experience])
-            tds = torch.clip(tds, 0, 5)
             k = np.arange(len(self.experience))
             p = torch.softmax(tds, 0).numpy()
             sampler = st.rv_discrete(values=(k, p))
@@ -80,13 +80,20 @@ class Experience:
             else:
                 indices = random.sample(range(0, len(self.experience)), len(self.experience))
             batch = [self.experience[i] for i in indices]
-        return batch
+        return batch, indices
 
     def append(self, x):
         self.experience.append(x)
 
+    def update_td(self, td_errors, indices):
+        for td, index in zip(td_errors, indices):
+            old_transition = self.experience[index]
+            new_transition = transition(old_transition.state, old_transition.action, old_transition.reward,
+                                        old_transition.next_state, old_transition.done, td)
+            self.experience[index] = new_transition
+
     def replay(self, qnet, target_net, loss_fn, optimizer, batch_size, priority_sampling):
-        transitions = self.sample(batch_size, priority_sampling)
+        transitions, indices = self.sample(batch_size, priority_sampling)
         states = torch.tensor(np.array([t.state for t in transitions]))
         actions = torch.tensor(np.array([t.action for t in transitions]), dtype=torch.long)
         next_states = torch.tensor(np.array([t.next_state for t in transitions]))
@@ -102,11 +109,13 @@ class Experience:
             next_action_values, _ = torch.max(next_action_values, 1)
         td_target = rewards + next_action_values
         td_target[ts] = rewards[ts]
-        tds = loss_fn(td_target, action_values)
+        td_loss = loss_fn(td_target, action_values)
         optimizer.zero_grad()
-        tds.backward()
+        td_loss.backward()
         optimizer.step()
-        return tds.item()
+        td_error = np.abs(td_target.detach().numpy() - action_values.detach().numpy())
+        self.update_td(td_error, indices)
+        return td_loss.detach().numpy()
 
 
 @torch.no_grad()
@@ -134,7 +143,7 @@ def computes_td(policy_net, target_net, state, action, reward, next_state, done)
         q_next_state_action = torch.max(target_net(torch.tensor(next_state)))
         td = q_next_state_action + reward - q_state_action
 
-    return td
+    return math.fabs(td)
 
 
 def normalize_state(state):
@@ -162,7 +171,7 @@ experience = Experience()
 steps = parameters.steps
 env = gym.envs.make("CartPole-v1")
 state = env.reset()
-loss = nn.MSELoss()
+loss = nn.SmoothL1Loss()
 optimizer = torch.optim.Adam(q_target_net.parameters(), lr=parameters.learning_rate)
 tds = []
 Returns = []
