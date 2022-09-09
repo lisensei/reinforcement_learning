@@ -24,7 +24,7 @@ parser.add_argument("-gamma", default=1)
 parser.add_argument("-learning_rate", default=1e-2)
 parser.add_argument("-show_rate", default=50)
 parser.add_argument("-batch_size", default=32)
-parser.add_argument("-priority_sampling", default=1)
+parser.add_argument("-priority_sampling", default=0)
 parameters = parser.parse_args()
 
 transition = namedtuple("transition", ["state", "action", "reward", "next_state", "done", "td_error"])
@@ -92,7 +92,7 @@ class Experience:
                                         old_transition.next_state, old_transition.done, td)
             self.experience[index] = new_transition
 
-    def replay(self, qnet, target_net, loss_fn, optimizer, batch_size, priority_sampling):
+    def replay(self, q_net, q_target_net, loss_fn, optimizer, batch_size, priority_sampling):
         transitions, indices = self.sample(batch_size, priority_sampling)
         states = torch.tensor(np.array([t.state for t in transitions]))
         actions = torch.tensor(np.array([t.action for t in transitions]), dtype=torch.long)
@@ -101,11 +101,11 @@ class Experience:
         terminal_states = np.array([t.done for t in transitions])
         ts = np.argwhere(terminal_states == True).reshape(1, -1)
         '''Computes Q(s,a)'''
-        action_values = target_net(states)
+        action_values = q_net(states)
         action_values = action_values[np.arange(len(action_values)), actions]
         '''Computes max of Q(s',a')'''
         with torch.no_grad():
-            next_action_values = qnet(next_states)
+            next_action_values = q_target_net(next_states)
             next_action_values, _ = torch.max(next_action_values, 1)
         td_target = rewards + next_action_values
         td_target[ts] = rewards[ts]
@@ -135,12 +135,12 @@ def test(net):
 
 
 @torch.no_grad()
-def computes_td(policy_net, target_net, state, action, reward, next_state, done):
+def computes_td(q_net, q_target_net, state, action, reward, next_state, done):
     if done:
         td = reward
     else:
-        q_state_action = policy_net(torch.tensor(state))[action]
-        q_next_state_action = torch.max(target_net(torch.tensor(next_state)))
+        q_state_action = q_net(torch.tensor(state))[action]
+        q_next_state_action = torch.max(q_target_net(torch.tensor(next_state)))
         td = q_next_state_action + reward - q_state_action
 
     return math.fabs(td)
@@ -164,15 +164,15 @@ state_size = 4
 policy net is the actual net that learns parameters.
 behavior net generates episodes.
 '''
-q_net = QNET(state_size, )
 q_target_net = QNET(state_size)
+q_net = QNET(state_size)
 experience = Experience()
 
 steps = parameters.steps
 env = gym.envs.make("CartPole-v1")
 state = env.reset()
 loss = nn.SmoothL1Loss()
-optimizer = torch.optim.Adam(q_target_net.parameters(), lr=parameters.learning_rate)
+optimizer = torch.optim.Adam(q_net.parameters(), lr=parameters.learning_rate)
 tds = []
 Returns = []
 test_returns = []
@@ -184,12 +184,12 @@ plt.show()
 Return = 0
 episode = 0
 num_test = 0
-'''max sequence length for recurrent dqn'''
-state_deque = deque(maxlen=parameters.composite_state_length)
+
 for e in range(parameters.steps):
     '''computes state action values while following behavior net'''
     exp_state = np.copy(state)
-    evolving_state_actions = q_target_net(torch.tensor(state))
+    with torch.no_grad():
+        evolving_state_actions = q_net(torch.tensor(state))
     eps = parameters.eps ** ((e + 200) / 200)
     probabilities = np.ones(num_actions) * eps / num_actions
 
@@ -202,7 +202,7 @@ for e in range(parameters.steps):
 
     '''evolving net interacts with the environment'''
     state, reward, done, _ = env.step(action_selected)
-    td_error = computes_td(q_net, q_target_net, state, action_selected, reward, np.copy(state), done)
+    td_error = computes_td(q_target_net, q_net, state, action_selected, reward, np.copy(state), done)
     exp_transition = transition(exp_state, action_selected, reward, np.copy(state), done, td_error)
 
     Return += reward
@@ -226,9 +226,9 @@ for e in range(parameters.steps):
         axes[1].set_title("Replay Loss")
     plt.pause(0.00001)
     if e % parameters.bnet_update_rate == 0:
-        q_net.load_state_dict(q_target_net.state_dict())
+        q_target_net.load_state_dict(q_net.state_dict())
     if e % parameters.show_rate == 0:
-        tr = test(q_target_net)
+        tr = test(q_net)
         test_returns.append(tr)
         num_test += 1
         s = np.arange(num_test)
