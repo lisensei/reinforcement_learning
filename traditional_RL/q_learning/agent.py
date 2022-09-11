@@ -1,9 +1,7 @@
-import time
-from pprint import pprint
-
+"""
+Agent class creates instances that learn by interacting with the environment
+"""
 import matplotlib.pyplot as plt
-import numpy as np
-
 from gridworld import *
 from collections import namedtuple, deque
 
@@ -38,8 +36,9 @@ class Agent:
                 =  Q(s,a) + a(R_{t+1} + Q_max(s',a')-Q(s,a))
 
         '''
-        fig, axe = plt.subplots(layout="constrained")
-        axe.yaxis_inverted()
+        fig, axe = plt.subplots(2, 1, layout="constrained")
+        axe[0].yaxis_inverted()
+        axe[1].yaxis_inverted()
         for e in range(num_episodes):
             episode = self.sample_episode(self.env)
             num_transitions = len(episode)
@@ -53,8 +52,10 @@ class Agent:
                 new_q_of_sa = q_of_sa + learning_rate * (td_target - q_of_sa)
                 self.q_values[state, action] = new_q_of_sa
             if e % 100 == 0:
-                print(self.q_values)
-                self.show_qvalues(axe)
+                transposed_q_values = self.q_values.transpose().round(1)
+                transposed_state_values = np.max(self.q_values, axis=1).reshape(4, 4).transpose().round(1)
+                self.show_values(axe[0], transposed_q_values, "State Action Values")
+                self.show_values(axe[1], transposed_state_values, "State Values")
 
     def sample_action(self, state, eps=0.4):
         eps_over_A = (eps / self.action_size)
@@ -65,7 +66,7 @@ class Agent:
         action = np.array(action_sampler.rvs())
         return action
 
-    def sample_episode(self, env: GridWorld):
+    def sample_episode(self, env):
         state = env.reset()
         done = False
         episode = []
@@ -77,11 +78,11 @@ class Agent:
             episode.append(t)
         return episode
 
-    def show_qvalues(self, axe):
-        transposed_matrix = self.q_values.transpose().round(1)
+    def show_values(self, axe, values: np.ndarray, title: str):
         axe.clear()
-        axe.matshow(transposed_matrix)
-        for (i, j), v in np.ndenumerate(transposed_matrix):
+        axe.set_title(title)
+        axe.matshow(values)
+        for (i, j), v in np.ndenumerate(values):
             axe.text(j, i, str(v))
             plt.show()
         plt.pause(0.1)
