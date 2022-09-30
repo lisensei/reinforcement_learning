@@ -13,9 +13,11 @@ import scipy.stats as st
 import argparse
 import copy
 import math
+import torch.utils.data as datautils
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-steps", default=20000)
+parser.add_argument("-memory_size", default=1000)
 parser.add_argument("-bnet_update_rate", default=10)
 parser.add_argument("-composite_state_length", default=5)
 parser.add_argument("-hidden_size", default=256)
@@ -24,7 +26,7 @@ parser.add_argument("-gamma", default=1)
 parser.add_argument("-learning_rate", default=1e-2)
 parser.add_argument("-show_rate", default=50)
 parser.add_argument("-batch_size", default=32)
-parser.add_argument("-priority_sampling", default=0)
+parser.add_argument("-priority_sampling", default=1)
 parameters = parser.parse_args()
 
 transition = namedtuple("transition", ["state", "action", "reward", "next_state", "done", "td_error"])
@@ -65,21 +67,16 @@ class Experience:
     def sample(self, batch_size, priority_sampling=False):
         if priority_sampling:
             tds = torch.tensor([exp.td_error for exp in self.experience])
-            k = np.arange(len(self.experience))
-            p = torch.softmax(tds, 0).numpy()
-            sampler = st.rv_discrete(values=(k, p))
             if len(self.experience) > batch_size:
-                indices = sampler.rvs(size=batch_size)
+                indices = list(datautils.WeightedRandomSampler(tds, batch_size))
             else:
-                indices = sampler.rvs(size=len(self.experience))
-            indices = np.unique(indices)
-            batch = [self.experience[i] for i in indices]
+                indices = list(datautils.WeightedRandomSampler(tds, len(self.experience)))
         else:
             if len(self.experience) > batch_size:
                 indices = random.sample(range(0, len(self.experience)), batch_size)
             else:
                 indices = random.sample(range(0, len(self.experience)), len(self.experience))
-            batch = [self.experience[i] for i in indices]
+        batch = [self.experience[i] for i in indices]
         return batch, indices
 
     def append(self, x):
@@ -98,8 +95,7 @@ class Experience:
         actions = torch.tensor(np.array([t.action for t in transitions]), dtype=torch.long)
         next_states = torch.tensor(np.array([t.next_state for t in transitions]))
         rewards = torch.tensor(np.array([t.reward for t in transitions]), dtype=torch.float32)
-        terminal_states = np.array([t.done for t in transitions])
-        ts = np.argwhere(terminal_states == True).reshape(1, -1)
+        terminal_states = torch.tensor([t.done for t in transitions])
         '''Computes Q(s,a)'''
         action_values = q_net(states)
         action_values = action_values[np.arange(len(action_values)), actions]
@@ -107,8 +103,7 @@ class Experience:
         with torch.no_grad():
             next_action_values = q_target_net(next_states)
             next_action_values, _ = torch.max(next_action_values, 1)
-        td_target = rewards + next_action_values
-        td_target[ts] = rewards[ts]
+        td_target = rewards + ~terminal_states * next_action_values
         td_loss = loss_fn(td_target, action_values)
         optimizer.zero_grad()
         td_loss.backward()
@@ -166,7 +161,7 @@ behavior net generates episodes.
 '''
 q_target_net = QNET(state_size)
 q_net = QNET(state_size)
-experience = Experience()
+experience = Experience(parameters.memory_size)
 
 steps = parameters.steps
 env = gym.envs.make("CartPole-v1")
