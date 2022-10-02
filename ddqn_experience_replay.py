@@ -22,14 +22,15 @@ parser.add_argument("-bnet_update_rate", default=10)
 parser.add_argument("-composite_state_length", default=5)
 parser.add_argument("-hidden_size", default=256)
 parser.add_argument("-eps", default=0.3)
-parser.add_argument("-gamma", default=1)
+parser.add_argument("-gamma", default=0.99)
 parser.add_argument("-learning_rate", default=1e-2)
 parser.add_argument("-show_rate", default=50)
 parser.add_argument("-batch_size", default=32)
 parser.add_argument("-priority_sampling", default=1)
 parameters = parser.parse_args()
 
-transition = namedtuple("transition", ["state", "action", "reward", "next_state", "done", "td_error"])
+transition = namedtuple(
+    "transition", ["state", "action", "reward", "next_state", "done", "td_error"])
 
 '''Linear deep Q net'''
 
@@ -68,14 +69,18 @@ class Experience:
         if priority_sampling:
             tds = torch.tensor([exp.td_error for exp in self.experience])
             if len(self.experience) > batch_size:
-                indices = list(datautils.WeightedRandomSampler(tds, batch_size))
+                indices = list(
+                    datautils.WeightedRandomSampler(tds, batch_size))
             else:
-                indices = list(datautils.WeightedRandomSampler(tds, len(self.experience)))
+                indices = list(datautils.WeightedRandomSampler(
+                    tds, len(self.experience)))
         else:
             if len(self.experience) > batch_size:
-                indices = random.sample(range(0, len(self.experience)), batch_size)
+                indices = random.sample(
+                    range(0, len(self.experience)), batch_size)
             else:
-                indices = random.sample(range(0, len(self.experience)), len(self.experience))
+                indices = random.sample(
+                    range(0, len(self.experience)), len(self.experience))
         batch = [self.experience[i] for i in indices]
         return batch, indices
 
@@ -92,9 +97,12 @@ class Experience:
     def replay(self, q_net, q_target_net, loss_fn, optimizer, batch_size, priority_sampling):
         transitions, indices = self.sample(batch_size, priority_sampling)
         states = torch.tensor(np.array([t.state for t in transitions]))
-        actions = torch.tensor(np.array([t.action for t in transitions]), dtype=torch.long)
-        next_states = torch.tensor(np.array([t.next_state for t in transitions]))
-        rewards = torch.tensor(np.array([t.reward for t in transitions]), dtype=torch.float32)
+        actions = torch.tensor(
+            np.array([t.action for t in transitions]), dtype=torch.long)
+        next_states = torch.tensor(
+            np.array([t.next_state for t in transitions]))
+        rewards = torch.tensor(
+            np.array([t.reward for t in transitions]), dtype=torch.float32)
         terminal_states = torch.tensor([t.done for t in transitions])
         '''Computes Q(s,a)'''
         action_values = q_net(states)
@@ -104,11 +112,12 @@ class Experience:
             next_action_values = q_target_net(next_states)
             next_action_values, _ = torch.max(next_action_values, 1)
         td_target = rewards + ~terminal_states * next_action_values
-        td_loss = loss_fn(td_target, action_values)
+        td_loss = loss_fn(parameters.gamma * td_target, action_values)
         optimizer.zero_grad()
         td_loss.backward()
         optimizer.step()
-        td_error = np.abs(td_target.detach().numpy() - action_values.detach().numpy())
+        td_error = np.abs(td_target.detach().numpy() -
+                          action_values.detach().numpy())
         self.update_td(td_error, indices)
         return td_loss.detach().numpy()
 
@@ -161,6 +170,7 @@ behavior net generates episodes.
 '''
 q_target_net = QNET(state_size)
 q_net = QNET(state_size)
+q_target_net.load_state_dict(q_net.state_dict())
 experience = Experience(parameters.memory_size)
 
 steps = parameters.steps
@@ -197,8 +207,10 @@ for e in range(parameters.steps):
 
     '''evolving net interacts with the environment'''
     state, reward, done, _ = env.step(action_selected)
-    td_error = computes_td(q_target_net, q_net, state, action_selected, reward, np.copy(state), done)
-    exp_transition = transition(exp_state, action_selected, reward, np.copy(state), done, td_error)
+    td_error = computes_td(q_target_net, q_net, state,
+                           action_selected, reward, np.copy(state), done)
+    exp_transition = transition(
+        exp_state, action_selected, reward, np.copy(state), done, td_error)
 
     Return += reward
     experience.append(exp_transition)
