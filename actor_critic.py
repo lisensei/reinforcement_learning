@@ -52,6 +52,30 @@ class Net(nn.Module):
         return out
 
 
+class ValueNet(nn.Module):
+    def __init__(self, state_size):
+        super(ValueNet, self).__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(state_size, 16),
+            nn.ReLU(),
+            nn.BatchNorm1d(16),
+            nn.Linear(16, 32),
+            nn.ReLU(),
+            nn.BatchNorm1d(32),
+            nn.Linear(32, 32),
+            nn.ReLU(),
+            nn.BatchNorm1d(32),
+            nn.Linear(32, 16),
+            nn.ReLU(),
+            nn.BatchNorm1d(16),
+            nn.Linear(16, 1),
+        )
+
+    def forward(self, x):
+        out = self.layers(x)
+        return out
+
+
 class TrajectoryDataset:
     def __init__(self, trajectories):
         self.trajectories = trajectories
@@ -72,10 +96,13 @@ class Agent:
     def __init__(self, env: gym.envs, mem_size=160):
         self.env = env
         self.brain = Net(env.observation_space.shape[0], env.action_space.n)
+        self.value_estimator = ValueNet(env.observation_space.shape[0])
         self.mem_size = mem_size
         self.memory = deque(maxlen=mem_size)
-        self.loss_fn = nn.CrossEntropyLoss(reduction="none")
-        self.optimizer = torch.optim.Adam(self.brain.parameters())
+        self.action_loss_fn = nn.CrossEntropyLoss(reduction="none")
+        self.value_loss_fn = nn.SmoothL1Loss()
+        self.action_optimizer = torch.optim.Adam(self.brain.parameters())
+        self.value_optimizer = torch.optim.Adam(self.value_estimator.parameters())
 
     def generate_data(self, ):
         self.memory.clear()
@@ -97,6 +124,11 @@ class Agent:
             self.memory.append(episode)
         sample_env.close()
 
+    @torch.no_grad()
+    def get_value_estimates(self, states):
+        self.value_estimator.eval()
+        return self.value_estimator(states)
+
     def policy_gradient_learning(self, epochs, fit_count=10, saving_threshold=400):
         plt.ion()
         fig, axe = plt.subplots(2, 1, layout="constrained")
@@ -106,11 +138,20 @@ class Agent:
         for e in tqdm(range(epochs)):
             self.generate_data()
             dataset = TrajectoryDataset(self.memory)
-            dataloader = utils.DataLoader(dataset, batch_size=batch_size, collate_fn=collate_batch)
+            actor_dataloader = utils.DataLoader(dataset, batch_size=batch_size, collate_fn=collate_batch)
+            critic_dataloader = utils.DataLoader(dataset, batch_size=batch_size, collate_fn=collate_batch)
+            self.value_estimator.train()
+            for _ in range(fit_count):
+                for c, (current_state, _, expected_return) in enumerate(critic_dataloader):
+                    estimates = self.value_estimator(current_state)
+                    value_estimator_loss = self.value_loss_fn(estimates, expected_return)
+                    self.value_optimizer.zero_grad()
+                    value_estimator_loss.backward()
+                    self.value_optimizer.step()
             '''Fits the data sampled from the old policy'''
             for o in range(fit_count):
                 fit_loss = torch.zeros(size=(0,))
-                for i, (state, action, total_return) in enumerate(dataloader):
+                for i, (state, action, total_return) in enumerate(actor_dataloader):
                     output = self.brain(state)
                     ''' 
                     Grad at time step t of a specific trajectory k  is:
@@ -119,16 +160,18 @@ class Agent:
                     The gradient of is the sum of grad at all time step in a batch.
                     '''
                     reward_estimate = total_return
-                    baseline = 0
+                    baseline = self.get_value_estimates(state)
                     advantage = reward_estimate - baseline
-                    loss = torch.sum(advantage.squeeze(1) * self.loss_fn(output, action))
-                    self.optimizer.zero_grad()
+                    loss = torch.sum(advantage.squeeze(1) * self.action_loss_fn(output, action))
+                    self.action_optimizer.zero_grad()
                     loss.backward()
-                    self.optimizer.step()
+                    self.action_optimizer.step()
                     fit_loss = torch.cat([fit_loss, loss.detach().reshape(-1)])
             epoch_loss = torch.cat([epoch_loss, torch.mean(fit_loss).reshape(-1)])
             reward = self.test()
             returns.append(reward)
+            axe[0].set_title("test run return")
+            axe[1].set_title("averaged epoch loss")
             axe[0].plot(np.arange(len(returns)), np.array(returns))
             axe[1].plot(np.arange(len(epoch_loss)), epoch_loss.numpy())
             plt.pause(0.0001)
