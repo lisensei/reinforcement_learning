@@ -1,4 +1,4 @@
-"""This script runs the naive policy gradient algorithm on CartPole-v1"""
+"""This script runs the actor-critic policy gradient algorithm on LunarLander-v2"""
 import torch
 import torch.nn as nn
 import numpy as np
@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-saving_threshold", default=400, type=int)
-parser.add_argument("-env_name", default="CartPole-v1")
+parser.add_argument("-env_name", default="LunarLander-v2")
 parser.add_argument("-epochs", default=10000)
 parser.add_argument("-fit_count", default=10)
 script_parameters = parser.parse_args()
@@ -25,11 +25,29 @@ This function turns it into tuples of tensors (states,action,reward)
 '''
 
 
+class TrajectoryDataset:
+    def __init__(self, trajectories):
+        self.trajectories = trajectories
+
+    def __len__(self):
+        return len(self.trajectories)
+
+    def __getitem__(self, index):
+        episode = self.trajectories[index]
+        states = torch.tensor(np.array([t.state for t in episode]))
+        actions = torch.tensor([t.action for t in episode]).reshape(-1)
+        rewards = torch.tensor([t.reward for t in episode]).reshape(-1, 1)
+        next_states = torch.tensor(np.array([t.next_state for t in episode]))
+        return states, actions, rewards, next_states
+
+
 def collate_batch(array):
     states = torch.cat([ele[0] for ele in array])
     actions = torch.cat([ele[1] for ele in array])
-    reward = torch.cat([ele[2] for ele in array])
-    return states, actions, reward
+    rewards = torch.cat([ele[2] for ele in array])
+    next_states = torch.cat([ele[3] for ele in array])
+    total_returns = torch.cat([ele[2].cumsum(0).flipud() for ele in array])
+    return states, actions, rewards, next_states, total_returns
 
 
 class Net(nn.Module):
@@ -76,22 +94,6 @@ class ValueNet(nn.Module):
         return out
 
 
-class TrajectoryDataset:
-    def __init__(self, trajectories):
-        self.trajectories = trajectories
-
-    def __len__(self):
-        return len(self.trajectories)
-
-    def __getitem__(self, index):
-        episode = self.trajectories[index]
-        states = torch.tensor(np.array([t.state for t in episode]))
-        actions = torch.tensor([t.action for t in episode]).reshape(-1)
-        rewards = torch.tensor([t.reward for t in episode]).reshape(-1, 1)
-        total_returns = rewards.cumsum(0).flipud()
-        return states, actions, total_returns
-
-
 class Agent:
     def __init__(self, env: gym.envs, mem_size=160):
         self.env = env
@@ -134,7 +136,7 @@ class Agent:
         fig, axe = plt.subplots(2, 1, layout="constrained")
         returns = []
         batch_size = 4
-        epoch_loss = torch.zeros(size=(0,))
+        epoch_loss = []
         for e in tqdm(range(epochs)):
             self.generate_data()
             dataset = TrajectoryDataset(self.memory)
@@ -142,16 +144,18 @@ class Agent:
             critic_dataloader = utils.DataLoader(dataset, batch_size=batch_size, collate_fn=collate_batch)
             self.value_estimator.train()
             for _ in range(fit_count):
-                for c, (current_state, _, expected_return) in enumerate(critic_dataloader):
+                for c, (current_state, _, _, _, expected_return) in enumerate(critic_dataloader):
                     estimates = self.value_estimator(current_state)
                     value_estimator_loss = self.value_loss_fn(estimates, expected_return)
                     self.value_optimizer.zero_grad()
                     value_estimator_loss.backward()
                     self.value_optimizer.step()
             '''Fits the data sampled from the old policy'''
+            self.value_estimator.eval()
+            self.brain.train()
             for o in range(fit_count):
-                fit_loss = torch.zeros(size=(0,))
-                for i, (state, action, total_return) in enumerate(actor_dataloader):
+                fit_loss = []
+                for i, (state, action, reward, next_state, total_return) in enumerate(actor_dataloader):
                     output = self.brain(state)
                     ''' 
                     Grad at time step t of a specific trajectory k  is:
@@ -160,20 +164,22 @@ class Agent:
                     The gradient of is the sum of grad at all time step in a batch.
                     '''
                     reward_estimate = total_return
+                    # reward_estimate = self.get_value_estimates(next_state) + reward
                     baseline = self.get_value_estimates(state)
                     advantage = reward_estimate - baseline
-                    loss = torch.sum(advantage.squeeze(1) * self.action_loss_fn(output, action))
+                    # loss = torch.sum(advantage.squeeze(1) * self.action_loss_fn(output, action))
+                    loss = torch.mean(advantage.squeeze(1) * self.action_loss_fn(output, action))
                     self.action_optimizer.zero_grad()
                     loss.backward()
                     self.action_optimizer.step()
-                    fit_loss = torch.cat([fit_loss, loss.detach().reshape(-1)])
-            epoch_loss = torch.cat([epoch_loss, torch.mean(fit_loss).reshape(-1)])
-            reward = self.test()
-            returns.append(reward)
+                    fit_loss.append(loss.detach().numpy())
+            epoch_loss.append(np.mean(fit_loss))
+            test_reward = self.test()
+            returns.append(test_reward)
             axe[0].set_title("test run return")
             axe[1].set_title("averaged epoch loss")
             axe[0].plot(np.arange(len(returns)), np.array(returns))
-            axe[1].plot(np.arange(len(epoch_loss)), epoch_loss.numpy())
+            axe[1].plot(np.arange(len(epoch_loss)), epoch_loss)
             plt.pause(0.0001)
             mean_reward = np.mean(np.array(returns))
             if mean_reward > saving_threshold:
@@ -183,6 +189,7 @@ class Agent:
 
     @torch.no_grad()
     def test(self):
+        self.brain.train()
         test_env = gym.make(script_parameters.env_name)
         state = test_env.reset()
         done = False
@@ -200,6 +207,5 @@ class Agent:
 if __name__ == "__main__":
     env = gym.envs.make(script_parameters.env_name)
     agent = Agent(env)
-    agent.generate_data()
     agent.policy_gradient_learning(script_parameters.epochs, script_parameters.fit_count,
                                    script_parameters.saving_threshold)
