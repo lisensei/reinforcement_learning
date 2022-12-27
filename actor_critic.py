@@ -15,6 +15,8 @@ parser.add_argument("-saving_threshold", default=400, type=int)
 parser.add_argument("-env_name", default="LunarLander-v2")
 parser.add_argument("-epochs", default=10000)
 parser.add_argument("-fit_count", default=10)
+parser.add_argument("-gamma", default=1, type=float)
+parser.add_argument("-memory_size", default=160,type=int)
 script_parameters = parser.parse_args()
 
 Transition = namedtuple("transition", ["state", "action", "reward", "next_state"])
@@ -42,11 +44,22 @@ class TrajectoryDataset:
 
 
 def collate_batch(array):
-    states = torch.cat([ele[0] for ele in array])
-    actions = torch.cat([ele[1] for ele in array])
-    rewards = torch.cat([ele[2] for ele in array])
-    next_states = torch.cat([ele[3] for ele in array])
-    total_returns = torch.cat([ele[2].cumsum(0).flipud() for ele in array])
+    states = torch.cat([element[0] for element in array])
+    actions = torch.cat([element[1] for element in array])
+    rewards = torch.cat([element[2] for element in array])
+    next_states = torch.cat([element[3] for element in array])
+    '''
+    total_returns: a list of G_t at time step t
+    G_t=R_t+gamma^{1}*R_{t+1}+gamma^2*R_{t+2}+...+gamma^{T-t}*R_T
+    '''
+    total_returns = []
+    episode_length = len(rewards)
+    for step in range(episode_length):
+        gammas = torch.pow(script_parameters.gamma, torch.arange(0, episode_length - step))
+        remaining_rewards = rewards[step:]
+        cumsum = torch.sum(remaining_rewards * gammas.reshape(remaining_rewards.shape))
+        total_returns.append(cumsum)
+    total_returns = torch.tensor(total_returns).reshape(-1, 1)
     return states, actions, rewards, next_states, total_returns
 
 
@@ -95,7 +108,7 @@ class ValueNet(nn.Module):
 
 
 class Agent:
-    def __init__(self, env: gym.envs, mem_size=160):
+    def __init__(self, env: gym.envs, mem_size=script_parameters.memory_size):
         self.env = env
         self.brain = Net(env.observation_space.shape[0], env.action_space.n)
         self.value_estimator = ValueNet(env.observation_space.shape[0])
@@ -131,7 +144,7 @@ class Agent:
         self.value_estimator.eval()
         return self.value_estimator(states)
 
-    def policy_gradient_learning(self, epochs, fit_count=10, saving_threshold=400):
+    def policy_gradient_learning(self, epochs, fit_count=script_parameters.fit_count, saving_threshold=400):
         plt.ion()
         fig, axe = plt.subplots(2, 1, layout="constrained")
         returns = []
