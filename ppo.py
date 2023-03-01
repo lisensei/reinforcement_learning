@@ -16,9 +16,9 @@ parser.add_argument("-env_name", default="LunarLander-v2")
 parser.add_argument("-epochs", default=100)
 parser.add_argument("-fit_count", default=10)
 parser.add_argument("-gamma", default=1, type=float)
-parser.add_argument("-memory_size", default=100, type=int)
+parser.add_argument("-memory_size", default=200, type=int)
 parser.add_argument("-sync_frequency", default=1, type=int)
-script_parameters = parser.parse_args()
+hp = parser.parse_args()
 
 Transition = namedtuple("transition", ["state", "action", "reward", "next_state"])
 
@@ -56,7 +56,7 @@ def collate_batch(array):
     total_returns = []
     episode_length = len(rewards)
     for step in range(episode_length):
-        gammas = torch.pow(script_parameters.gamma, torch.arange(0, episode_length - step))
+        gammas = torch.pow(hp.gamma, torch.arange(0, episode_length - step))
         remaining_rewards = rewards[step:]
         cumsum = torch.sum(remaining_rewards * gammas.reshape(remaining_rewards.shape))
         total_returns.append(cumsum)
@@ -70,16 +70,16 @@ class Net(nn.Module):
         self.layers = nn.Sequential(
             nn.Linear(state_size, 16),
             nn.ReLU(),
-            nn.BatchNorm1d(16),
+            # nn.BatchNorm1d(16),
             nn.Linear(16, 32),
             nn.ReLU(),
-            nn.BatchNorm1d(32),
+            # nn.BatchNorm1d(32),
             nn.Linear(32, 32),
             nn.ReLU(),
-            nn.BatchNorm1d(32),
+            # nn.BatchNorm1d(32),
             nn.Linear(32, 16),
             nn.ReLU(),
-            nn.BatchNorm1d(16),
+            # nn.BatchNorm1d(16),
             nn.Linear(16, action_size),
         )
 
@@ -113,11 +113,13 @@ class ValueNet(nn.Module):
 
 
 class Agent:
-    def __init__(self, env: gym.envs, mem_size=script_parameters.memory_size):
+    def __init__(self, env: gym.envs, mem_size=hp.memory_size):
         self.env = env
         self.policy_net = Net(env.observation_space.shape[0], env.action_space.n)
         self.behavior_net = Net(env.observation_space.shape[0], env.action_space.n)
         self.behavior_net.load_state_dict(self.policy_net.state_dict())
+        for param in self.behavior_net.parameters():
+            param.requires_grad = False
         self.value_estimator = ValueNet(env.observation_space.shape[0])
         self.mem_size = mem_size
         self.memory = deque(maxlen=mem_size)
@@ -127,18 +129,25 @@ class Agent:
         self.value_optimizer = torch.optim.Adam(self.value_estimator.parameters())
 
     @torch.no_grad()
-    def generate_data(self, ):
-        self.behavior_net.eval()
+    def generate_data(self, importance_sampling=True):
+        if importance_sampling:
+            self.behavior_net.eval()
+        else:
+            self.policy_net.eval()
         self.memory.clear()
-        sample_env = gym.make(script_parameters.env_name)
+        sample_env = gym.make(hp.env_name)
         num_actions = sample_env.action_space.n
         for i in range(self.mem_size):
             episode = []
             state, _ = sample_env.reset()
             done = False
-            while not done:
+            truncated = False
+            while not done and not truncated:
                 state_copy = np.copy(state)
-                output = self.behavior_net(torch.tensor(state).unsqueeze(0)).squeeze(0)
+                if importance_sampling:
+                    output = self.behavior_net(torch.tensor(state).unsqueeze(0)).squeeze(0)
+                else:
+                    output = self.policy_net(torch.tensor(state).unsqueeze(0)).squeeze(0)
                 action_sampler = st.rv_discrete(
                     values=(np.arange(num_actions), torch.softmax(output, 0).detach().numpy()))
                 action = action_sampler.rvs()
@@ -153,7 +162,7 @@ class Agent:
         self.value_estimator.eval()
         return self.value_estimator(states)
 
-    def PPO(self, epochs, fit_count=script_parameters.fit_count, saving_threshold=400, eps=0.2):
+    def PPO(self, epochs, fit_count=hp.fit_count, saving_threshold=400, eps=0.2):
         plt.ion()
         fig, axe = plt.subplots(2, 1, layout="constrained")
         returns = []
@@ -181,12 +190,18 @@ class Agent:
                     self.policy_net.train()
                     output = self.policy_net(state)
                     with torch.no_grad():
-                        probabilities = torch.softmax(output, dim=1)
-                        target_action_probability, _ = torch.max(probabilities, dim=1)
-                        predicted_action = torch.argmax(probabilities, keepdim=True, dim=1)
+                        # self.behavior_net.load_state_dict(self.policy_net.state_dict())
+                        # self.behavior_net.train()
+                        probabilities = torch.softmax(output.detach(), dim=1)
+                        # target_action_probability, _ = torch.max(probabilities, dim=1)
+                        # predicted_action = torch.argmax(probabilities, keepdim=True, dim=1)
+                        self.behavior_net.eval()
                         behavior_net_probabilities = torch.softmax(self.behavior_net(state), dim=1).gather(1,
-                                                                                                           predicted_action).squeeze(
+                                                                                                           action.unsqueeze(
+                                                                                                               1)).squeeze(
                             1)
+                        self.behavior_net.eval()
+                    target_action_probability = probabilities.gather(1, action.unsqueeze(1)).squeeze(1)
                     importance_ratio = target_action_probability / behavior_net_probabilities
                     ''' 
                     Grad at time step t of a specific trajectory k  is:
@@ -201,13 +216,13 @@ class Agent:
                     adjusted_advantage = torch.min(importance_ratio * advantage,
                                                    torch.clip(importance_ratio, importance_ratio - eps,
                                                               importance_ratio + eps) * advantage)
-                    loss = torch.mean(adjusted_advantage * self.action_loss_fn(output, action))
+                    loss = torch.mean(
+                        adjusted_advantage / target_action_probability * self.action_loss_fn(output, action))
                     self.action_optimizer.zero_grad()
                     loss.backward()
                     self.action_optimizer.step()
                     fit_loss.append(loss.detach().numpy())
-                    # self.behavior_net.load_state_dict(self.policy_net.state_dict())
-            if e % script_parameters.sync_frequency == 0:
+            if e % hp.sync_frequency == 0:
                 self.behavior_net.load_state_dict(self.policy_net.state_dict())
             epoch_loss.append(np.mean(fit_loss))
             test_reward = self.test()
@@ -216,32 +231,33 @@ class Agent:
             axe[1].set_title("averaged epoch loss")
             axe[0].plot(np.arange(len(returns)), np.array(returns))
             axe[1].plot(np.arange(len(epoch_loss)), epoch_loss)
-            plt.pause(0.0001)
+            plt.pause(0.5)
             mean_reward = np.mean(np.array(returns))
             if mean_reward > saving_threshold:
-                torch.save(self.policy_net.state_dict(), "CartPole-v1.pth")
+                torch.save(self.policy_net.state_dict(), f"{hp.env_name}.pth")
 
     '''test policy's performance'''
 
     @torch.no_grad()
     def test(self):
         self.policy_net.eval()
-        test_env = gym.make(script_parameters.env_name, render_mode="human")
+        test_env = gym.make(hp.env_name, render_mode="human")
         state, _ = test_env.reset()
         done = False
+        truncated = False
         reward = 0
-        while not done:
+        while not done and not truncated:
             output = self.policy_net(torch.tensor(state).unsqueeze(0)).squeeze(0)
             action = torch.argmax(output)
-            state, _, done, _, _ = test_env.step(action.numpy())
-            reward += 1
+            state, r, done, truncated, _ = test_env.step(action.numpy())
+            reward += r
             test_env.render()
         test_env.close()
         return reward
 
 
 if __name__ == "__main__":
-    env = gym.envs.make(script_parameters.env_name)
+    env = gym.envs.make(hp.env_name)
     agent = Agent(env)
-    agent.PPO(script_parameters.epochs, script_parameters.fit_count,
-              script_parameters.saving_threshold)
+    agent.PPO(hp.epochs, hp.fit_count,
+              hp.saving_threshold)
