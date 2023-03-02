@@ -15,11 +15,12 @@ parser.add_argument("-saving_threshold", default=100, type=int)
 parser.add_argument("-env_name", default="LunarLander-v2")
 parser.add_argument("-epochs", default=100)
 parser.add_argument("-critic_fit_count", default=10)
-parser.add_argument("-gamma", default=1, type=float)
+parser.add_argument("-gamma", default=0.99, type=float)
 parser.add_argument("-memory_size", default=100, type=int)
 parser.add_argument("-parameter_sync_frequency", default=5, type=int)
 parser.add_argument("-actor_learning_rate", default=1e-3)
 parser.add_argument("-critic_learning_rate", default=1e-3)
+parser.add_argument("-batch_size", default=4)
 hp = parser.parse_args()
 
 Transition = namedtuple("transition", ["state", "action", "reward", "next_state"])
@@ -51,17 +52,19 @@ def collate_batch(array):
     actions = torch.cat([element[1] for element in array])
     rewards = torch.cat([element[2] for element in array])
     next_states = torch.cat([element[3] for element in array])
+    episode_lengths = [len(element[0]) for element in array]
+
     '''
     total_returns: a list of G_t at time step t
     G_t=R_t+gamma^{1}*R_{t+1}+gamma^2*R_{t+2}+...+gamma^{T-t}*R_T
     '''
     total_returns = []
-    episode_length = len(rewards)
-    for step in range(episode_length):
-        gammas = torch.pow(hp.gamma, torch.arange(0, episode_length - step))
-        remaining_rewards = rewards[step:]
-        cumsum = torch.sum(remaining_rewards * gammas.reshape(remaining_rewards.shape))
-        total_returns.append(cumsum)
+    for i, el in enumerate(episode_lengths):
+        for step in range(el):
+            gammas = torch.pow(hp.gamma, torch.arange(0, el - step))
+            remaining_rewards = array[i][2][step:]
+            cumsum = torch.sum(remaining_rewards * gammas.reshape(remaining_rewards.shape))
+            total_returns.append(cumsum)
     total_returns = torch.tensor(total_returns).reshape(-1, 1)
     return states, actions, rewards, next_states, total_returns
 
@@ -165,13 +168,13 @@ class Agent:
         self.value_estimator.eval()
         return self.value_estimator(states)
 
-    def PPO(self, epochs, critic_fit_count=hp.critic_fit_count, parameter_sync_frequency=hp.parameter_sync_frequency,
+    def PPO(self, epochs, batch_size, critic_fit_count=hp.critic_fit_count,
+            parameter_sync_frequency=hp.parameter_sync_frequency,
             saving_threshold=400, eps=0.2):
         plt.ion()
         fig, axe = plt.subplots(3, 1, layout="constrained")
         returns = []
         time_steps = []
-        batch_size = 4
         epoch_loss = []
         for e in tqdm(range(epochs)):
             self.generate_data()
@@ -270,5 +273,5 @@ class Agent:
 if __name__ == "__main__":
     env = gym.envs.make(hp.env_name)
     agent = Agent(env)
-    agent.PPO(hp.epochs, hp.critic_fit_count, hp.parameter_sync_frequency,
+    agent.PPO(hp.epochs, hp.batch_size, hp.critic_fit_count, hp.parameter_sync_frequency,
               hp.saving_threshold)
