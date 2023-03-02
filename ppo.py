@@ -11,13 +11,15 @@ import argparse
 from tqdm import tqdm
 
 parser = argparse.ArgumentParser()
-parser.add_argument("-saving_threshold", default=400, type=int)
+parser.add_argument("-saving_threshold", default=100, type=int)
 parser.add_argument("-env_name", default="LunarLander-v2")
 parser.add_argument("-epochs", default=100)
-parser.add_argument("-fit_count", default=10)
+parser.add_argument("-critic_fit_count", default=10)
 parser.add_argument("-gamma", default=1, type=float)
-parser.add_argument("-memory_size", default=200, type=int)
-parser.add_argument("-sync_frequency", default=1, type=int)
+parser.add_argument("-memory_size", default=100, type=int)
+parser.add_argument("-parameter_sync_frequency", default=5, type=int)
+parser.add_argument("-actor_learning_rate", default=1e-3)
+parser.add_argument("-critic_learning_rate", default=1e-3)
 hp = parser.parse_args()
 
 Transition = namedtuple("transition", ["state", "action", "reward", "next_state"])
@@ -70,16 +72,16 @@ class Net(nn.Module):
         self.layers = nn.Sequential(
             nn.Linear(state_size, 16),
             nn.ReLU(),
-            # nn.BatchNorm1d(16),
+            nn.BatchNorm1d(16),
             nn.Linear(16, 32),
             nn.ReLU(),
-            # nn.BatchNorm1d(32),
-            nn.Linear(32, 32),
+            nn.BatchNorm1d(32),
+            nn.Linear(32, 64),
             nn.ReLU(),
-            # nn.BatchNorm1d(32),
-            nn.Linear(32, 16),
+            nn.BatchNorm1d(64),
+            nn.Linear(64, 16),
             nn.ReLU(),
-            # nn.BatchNorm1d(16),
+            nn.BatchNorm1d(16),
             nn.Linear(16, action_size),
         )
 
@@ -113,7 +115,8 @@ class ValueNet(nn.Module):
 
 
 class Agent:
-    def __init__(self, env: gym.envs, mem_size=hp.memory_size):
+    def __init__(self, env: gym.envs, mem_size=hp.memory_size, actor_learning_rate=hp.actor_learning_rate,
+                 critic_learning_rate=hp.critic_learning_rate):
         self.env = env
         self.policy_net = Net(env.observation_space.shape[0], env.action_space.n)
         self.behavior_net = Net(env.observation_space.shape[0], env.action_space.n)
@@ -125,8 +128,8 @@ class Agent:
         self.memory = deque(maxlen=mem_size)
         self.action_loss_fn = nn.CrossEntropyLoss(reduction="none")
         self.value_loss_fn = nn.SmoothL1Loss()
-        self.action_optimizer = torch.optim.Adam(self.policy_net.parameters())
-        self.value_optimizer = torch.optim.Adam(self.value_estimator.parameters())
+        self.action_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=actor_learning_rate)
+        self.value_optimizer = torch.optim.Adam(self.value_estimator.parameters(), lr=critic_learning_rate)
 
     @torch.no_grad()
     def generate_data(self, importance_sampling=True):
@@ -162,10 +165,12 @@ class Agent:
         self.value_estimator.eval()
         return self.value_estimator(states)
 
-    def PPO(self, epochs, fit_count=hp.fit_count, saving_threshold=400, eps=0.2):
+    def PPO(self, epochs, critic_fit_count=hp.critic_fit_count, parameter_sync_frequency=hp.parameter_sync_frequency,
+            saving_threshold=400, eps=0.2):
         plt.ion()
-        fig, axe = plt.subplots(2, 1, layout="constrained")
+        fig, axe = plt.subplots(3, 1, layout="constrained")
         returns = []
+        time_steps = []
         batch_size = 4
         epoch_loss = []
         for e in tqdm(range(epochs)):
@@ -174,7 +179,7 @@ class Agent:
             actor_dataloader = utils.DataLoader(dataset, batch_size=batch_size, collate_fn=collate_batch)
             critic_dataloader = utils.DataLoader(dataset, batch_size=batch_size, collate_fn=collate_batch)
             self.value_estimator.train()
-            for _ in range(fit_count):
+            for _ in range(critic_fit_count):
                 for c, (current_state, _, _, _, expected_return) in enumerate(critic_dataloader):
                     estimates = self.value_estimator(current_state)
                     value_estimator_loss = self.value_loss_fn(estimates, expected_return)
@@ -184,25 +189,25 @@ class Agent:
             '''Fits the data sampled from the old policy'''
             self.value_estimator.eval()
             self.policy_net.train()
-            for o in range(fit_count):
+            for o in range(parameter_sync_frequency):
                 fit_loss = []
                 for i, (state, action, reward, next_state, total_return) in enumerate(actor_dataloader):
                     self.policy_net.train()
                     output = self.policy_net(state)
+                    probabilities = torch.softmax(output, dim=1)
                     with torch.no_grad():
                         # self.behavior_net.load_state_dict(self.policy_net.state_dict())
                         # self.behavior_net.train()
-                        probabilities = torch.softmax(output.detach(), dim=1)
-                        # target_action_probability, _ = torch.max(probabilities, dim=1)
+                        # policy_net_action_probability, _ = torch.max(probabilities, dim=1)
                         # predicted_action = torch.argmax(probabilities, keepdim=True, dim=1)
                         self.behavior_net.eval()
-                        behavior_net_probabilities = torch.softmax(self.behavior_net(state), dim=1).gather(1,
-                                                                                                           action.unsqueeze(
-                                                                                                               1)).squeeze(
+                        behavior_net_action_probabilities = torch.softmax(self.behavior_net(state), dim=1).gather(1,
+                                                                                                                  action.unsqueeze(
+                                                                                                                      1)).squeeze(
                             1)
                         self.behavior_net.eval()
-                    target_action_probability = probabilities.gather(1, action.unsqueeze(1)).squeeze(1)
-                    importance_ratio = target_action_probability / behavior_net_probabilities
+                    policy_net_action_probability = probabilities.gather(1, action.unsqueeze(1)).squeeze(1)
+                    importance_ratio = policy_net_action_probability / behavior_net_action_probabilities
                     ''' 
                     Grad at time step t of a specific trajectory k  is:
                     grad_t = R_k* grad(p(a|s))
@@ -214,26 +219,30 @@ class Agent:
                     advantage = (reward_estimate - baseline).squeeze(1)
                     # PPO
                     adjusted_advantage = torch.min(importance_ratio * advantage,
-                                                   torch.clip(importance_ratio, importance_ratio - eps,
-                                                              importance_ratio + eps) * advantage)
-                    loss = torch.mean(
-                        adjusted_advantage / target_action_probability * self.action_loss_fn(output, action))
+                                                   torch.clip(importance_ratio, 1 - eps,
+                                                              1 + eps) * advantage)
+                    # loss = torch.mean(
+                    #    adjusted_advantage / policy_net_action_probability * self.action_loss_fn(output, action))
+                    loss = -torch.mean(adjusted_advantage)
                     self.action_optimizer.zero_grad()
                     loss.backward()
                     self.action_optimizer.step()
                     fit_loss.append(loss.detach().numpy())
-            if e % hp.sync_frequency == 0:
-                self.behavior_net.load_state_dict(self.policy_net.state_dict())
+            self.behavior_net.load_state_dict(self.policy_net.state_dict())
             epoch_loss.append(np.mean(fit_loss))
-            test_reward = self.test()
+            test_reward, steps_taken = self.test()
             returns.append(test_reward)
+            time_steps.append(steps_taken)
             axe[0].set_title("test run return")
-            axe[1].set_title("averaged epoch loss")
+            axe[1].set_title("time steps taken")
+            axe[2].set_title("averaged epoch loss")
             axe[0].plot(np.arange(len(returns)), np.array(returns))
-            axe[1].plot(np.arange(len(epoch_loss)), epoch_loss)
-            plt.pause(0.5)
+            axe[1].plot(np.arange(len(time_steps)), np.array(time_steps))
+            axe[2].plot(np.arange(len(epoch_loss)), epoch_loss)
+            plt.pause(1)
             mean_reward = np.mean(np.array(returns))
-            if mean_reward > saving_threshold:
+            print(test_reward)
+            if test_reward > saving_threshold:
                 torch.save(self.policy_net.state_dict(), f"{hp.env_name}.pth")
 
     '''test policy's performance'''
@@ -246,18 +255,20 @@ class Agent:
         done = False
         truncated = False
         reward = 0
+        steps = 0
         while not done and not truncated:
             output = self.policy_net(torch.tensor(state).unsqueeze(0)).squeeze(0)
             action = torch.argmax(output)
             state, r, done, truncated, _ = test_env.step(action.numpy())
             reward += r
+            steps += 1
             test_env.render()
         test_env.close()
-        return reward
+        return reward, steps
 
 
 if __name__ == "__main__":
     env = gym.envs.make(hp.env_name)
     agent = Agent(env)
-    agent.PPO(hp.epochs, hp.fit_count,
+    agent.PPO(hp.epochs, hp.critic_fit_count, hp.parameter_sync_frequency,
               hp.saving_threshold)
