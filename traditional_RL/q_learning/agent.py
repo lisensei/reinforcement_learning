@@ -4,8 +4,9 @@ Agent class creates instances that learn by interacting with the environment
 import matplotlib.pyplot as plt
 from gridworld import *
 from collections import namedtuple, deque
-
-transition = namedtuple("transition", ["state", "action", "next_state", "reward"])
+from datetime import datetime
+transition = namedtuple(
+    "transition", ["state", "action", "next_state", "reward"])
 
 state_space_size = 16
 action_space_size = 4
@@ -53,16 +54,25 @@ class Agent:
                 self.q_values[state, action] = new_q_of_sa
             if e % 100 == 0:
                 transposed_q_values = self.q_values.transpose().round(1)
-                transposed_state_values = np.max(self.q_values, axis=1).reshape(4, 4).transpose().round(1)
-                self.show_values(axe[0], transposed_q_values, "State Action Values")
-                self.show_values(axe[1], transposed_state_values, "State Values")
+                transposed_state_values = np.max(
+                    self.q_values, axis=1).reshape(4, 4).transpose().round(1)
+                self.show_values(
+                    axe[0], transposed_q_values, "State Action Values")
+                self.show_values(
+                    axe[1], transposed_state_values, "State Values")
+                plt.show()
+                plt.savefig(
+                    fname=f"./progress_{e}.jpg")
+                plt.pause(0.1)
 
     def sample_action(self, state, eps=0.4):
         eps_over_A = (eps / self.action_size)
-        action_given_state_probabilities = np.ones((self.action_size)) * eps_over_A
+        action_given_state_probabilities = np.ones(
+            (self.action_size)) * eps_over_A
         argmax_a = int(np.max(self.q_values[state]))
         action_given_state_probabilities[argmax_a] = 1 - eps + eps_over_A
-        action_sampler = st.rv_discrete(values=(np.arange(self.action_size), action_given_state_probabilities))
+        action_sampler = st.rv_discrete(
+            values=(np.arange(self.action_size), action_given_state_probabilities))
         action = np.array(action_sampler.rvs())
         return action
 
@@ -84,5 +94,3 @@ class Agent:
         axe.matshow(values)
         for (i, j), v in np.ndenumerate(values):
             axe.text(j, i, str(v))
-            plt.show()
-        plt.pause(0.1)
