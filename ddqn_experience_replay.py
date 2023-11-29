@@ -125,13 +125,13 @@ class Experience:
 @torch.no_grad()
 def test(net):
     test_env = gym.envs.make("CartPole-v1")
-    test_state = test_env.reset()
+    test_state,_ = test_env.reset()
     end = False
     test_reward = 0
     while not end:
         qvalues = net(torch.tensor(test_state))
         action = torch.argmax(qvalues).numpy()
-        test_state, r, end, _ = test_env.step(action)
+        test_state, r, end, _,_ = test_env.step(action)
         test_reward += r
         test_env.render()
     test_env.close()
@@ -175,7 +175,7 @@ experience = Experience(parameters.memory_size)
 
 steps = parameters.steps
 env = gym.envs.make("CartPole-v1")
-state = env.reset()
+state,_ = env.reset()
 loss = nn.SmoothL1Loss()
 optimizer = torch.optim.Adam(q_net.parameters(), lr=parameters.learning_rate)
 tds = []
@@ -206,7 +206,7 @@ for e in range(parameters.steps):
     action_selected = action_rv.rvs()
 
     '''evolving net interacts with the environment'''
-    state, reward, done, _ = env.step(action_selected)
+    state, reward, done, _,_ = env.step(action_selected)
     td_error = computes_td(q_target_net, q_net, state,
                            action_selected, reward, np.copy(state), done)
     exp_transition = transition(
@@ -215,7 +215,7 @@ for e in range(parameters.steps):
     Return += reward
     experience.append(exp_transition)
     if done:
-        state = env.reset()
+        state,_ = env.reset()
         Returns.append(Return)
         Return = 0
         episode += 1

@@ -68,7 +68,7 @@ class RQNET(nn.Module):
 @torch.no_grad()
 def test(net):
     test_env = gym.envs.make("CartPole-v1")
-    test_state = test_env.reset()
+    test_state,_ = test_env.reset()
     test_state_deque = deque(maxlen=parameters.composite_state_length)
     end = False
     test_reward = 0
@@ -78,7 +78,7 @@ def test(net):
         test_state = torch.cat(list(test_state_deque)).reshape(test_deque_len, -1)
         qvalues = net(test_state)
         action = torch.argmax(qvalues).numpy()
-        test_state, r, end, _ = test_env.step(action)
+        test_state, r, end, _,_ = test_env.step(action)
         test_reward += r
         test_env.render()
     test_env.close()
@@ -109,7 +109,7 @@ q_evolving_net = RQNET(state_size, parameters.hidden_size, num_actions)
 is_rnn = isinstance(q_base_net, RQNET)
 steps = parameters.steps
 env = gym.envs.make("CartPole-v1")
-state = env.reset()
+state,_ = env.reset()
 loss = nn.MSELoss()
 optimizer = torch.optim.Adam(q_base_net.parameters(), lr=parameters.learning_rate)
 tds = []
@@ -145,12 +145,12 @@ for e in range(parameters.steps):
     q_state_action = evolving_state_actions[action_selected]
 
     '''evolving net interacts with the environment'''
-    state, reward, done, _ = env.step(action_selected)
+    state, reward, done, _,_ = env.step(action_selected)
 
     Return += reward
     if done:
         td_target = torch.tensor(reward)
-        state = env.reset()
+        state,_ = env.reset()
         state_deque.clear()
         Returns.append(Return)
         Return = 0

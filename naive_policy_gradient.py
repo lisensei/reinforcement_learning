@@ -97,7 +97,7 @@ class Agent:
         num_actions = sample_env.action_space.n
         for i in range(self.mem_size):
             episode = []
-            state = sample_env.reset()
+            state,_ = sample_env.reset()
             done = False
             while not done:
                 state_copy = np.copy(state)
@@ -105,7 +105,7 @@ class Agent:
                 action_sampler = st.rv_discrete(
                     values=(np.arange(num_actions), torch.softmax(output, 0).detach().numpy()))
                 action = action_sampler.rvs()
-                state, reward, done, _ = sample_env.step(action)
+                state, reward, done, _,_ = sample_env.step(action)
                 transition = Transition(state_copy, action, reward, np.copy(state))
                 episode.append(transition)
             self.memory.append(episode)
@@ -130,7 +130,7 @@ class Agent:
                     where R_k is the total return of trajectory k.
                     The gradient of is the sum of grad at all time step in a batch.
                     '''
-                    loss = torch.sum(total_return * self.loss_fn(output, action))
+                    loss = torch.sum(total_return * self.loss_fn(output, action.to(torch.int64)))
                     self.optimizer.zero_grad()
                     loss.backward()
                     self.optimizer.step()
@@ -138,6 +138,8 @@ class Agent:
                 reward = self.test()
                 returns.append(reward)
                 axe.plot(np.arange(len(returns)), np.array(returns))
+                axe.set_xlabel("epoch")
+                axe.set_ylabel("reward")
                 plt.pause(0.0001)
                 if reward > 200:
                     Rs = []
@@ -152,13 +154,13 @@ class Agent:
     @torch.no_grad()
     def test(self):
         test_env = gym.make(script_parameters.env_name)
-        state = test_env.reset()
+        state,_ = test_env.reset()
         done = False
         reward = 0
         while not done:
             output = self.brain(torch.tensor(state))
             action = torch.argmax(output)
-            state, _, done, _ = test_env.step(action.numpy())
+            state, _, done, _,_ = test_env.step(action.numpy())
             reward += 1
             test_env.render()
         test_env.close()

@@ -8,3 +8,12 @@ After 1000 iterations, all state values converged.
 ![reinforcement_learning](assets/progress_1000.jpg)
 
 After 2000 iterations, all state values and state action values have converged.
+
+
+Deep Reinforcement Learning
+
+1. Policy Gradient on CartPole-v1
+
+![reinforcement_learning](assets/pg.jpg)
+
+After 20+ epochs, the agent got reward that exceeded the maximum which is 500.
